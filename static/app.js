@@ -238,6 +238,7 @@ function init_app() {
     let animationFrameId;
     let seqCounter = 0;
     let globalAnalyser = null;
+    let speakerGainNode = null;  // 扬声器音量增益节点
     let lipSyncActive = false;
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
@@ -1853,9 +1854,9 @@ function init_app() {
                 speakerVolume = DEFAULT_SPEAKER_VOLUME;
             }
 
-            // 立即应用到 AudioManager（如果已初始化）
-            if (window.AM && typeof window.AM.setVolume === 'function') {
-                window.AM.setVolume(speakerVolume);
+            // 立即应用到音频管道（如果已初始化）
+            if (speakerGainNode) {
+                speakerGainNode.gain.setTargetAtTime(speakerVolume / 100, speakerGainNode.context.currentTime, 0.05);
             }
         } catch (err) {
             console.error('加载扬声器音量设置失败:', err);
@@ -1867,8 +1868,8 @@ function init_app() {
     window.setSpeakerVolume = function(vol) {
         if (vol >= 0 && vol <= 100) {
             speakerVolume = vol;
-            if (window.AM) {
-                window.AM.setVolume(vol);
+            if (speakerGainNode) {
+                speakerGainNode.gain.setTargetAtTime(vol / 100, speakerGainNode.context.currentTime, 0.05);
             }
             saveSpeakerVolumeSetting();
             // 更新 UI 滑块（如果存在）
@@ -1890,17 +1891,34 @@ function init_app() {
         // 先停止现有的动画
         stopMicVolumeVisualization();
 
-        const volumeBarFill = document.getElementById('mic-volume-bar-fill');
-        const volumeStatus = document.getElementById('mic-volume-status');
-        const volumeHint = document.getElementById('mic-volume-hint');
-
-        if (!volumeBarFill) return;
+        // 缓存 DOM 引用，仅在元素被销毁时重新查询
+        let cachedBarFill = document.getElementById('mic-volume-bar-fill');
+        let cachedStatus = document.getElementById('mic-volume-status');
+        let cachedHint = document.getElementById('mic-volume-hint');
+        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
 
         function updateVolumeDisplay() {
-            // 检查弹出框是否仍然可见
-            const micPopup = document.getElementById('live2d-popup-mic');
-            if (!micPopup || micPopup.style.display === 'none' || !micPopup.offsetParent) {
+            // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
+            if (!cachedBarFill || !cachedBarFill.isConnected) {
+                cachedBarFill = document.getElementById('mic-volume-bar-fill');
+                cachedStatus = document.getElementById('mic-volume-status');
+                cachedHint = document.getElementById('mic-volume-hint');
+                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+            }
+
+            if (!cachedBarFill) {
+                // DOM 元素已销毁（popup 被重建），停止旧的动画循环
+                // renderFloatingMicList 会启动新的动画循环
                 stopMicVolumeVisualization();
+                return;
+            }
+
+            // 检查弹出框是否仍然可见（兼容 Live2D 和 VRM）
+            // 注意：父容器隐藏时 offsetParent 为 null，但 popup 本身并未销毁
+            // 此时仅跳过本帧更新，保持动画循环存活，鼠标回来时恢复显示
+            if (!cachedPopup || cachedPopup.style.display === 'none' || !cachedPopup.offsetParent) {
+                // popup 不可见，跳过本帧但继续循环
+                micVolumeAnimationId = requestAnimationFrame(updateVolumeDisplay);
                 return;
             }
 
@@ -1921,56 +1939,56 @@ function init_app() {
                 const volumePercent = Math.min(100, (average / 128) * 100);
 
                 // 更新音量条
-                volumeBarFill.style.width = `${volumePercent}%`;
+                cachedBarFill.style.width = `${volumePercent}%`;
 
                 // 根据音量设置颜色
                 if (volumePercent < 5) {
-                    volumeBarFill.style.backgroundColor = '#dc3545'; // 红色 - 无声音
+                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红色 - 无声音
                 } else if (volumePercent < 20) {
-                    volumeBarFill.style.backgroundColor = '#ffc107'; // 黄色 - 音量偏低
+                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄色 - 音量偏低
                 } else if (volumePercent > 90) {
-                    volumeBarFill.style.backgroundColor = '#fd7e14'; // 橙色 - 音量过高
+                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙色 - 音量过高
                 } else {
-                    volumeBarFill.style.backgroundColor = '#28a745'; // 绿色 - 正常
+                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿色 - 正常
                 }
 
                 // 更新状态文字
-                if (volumeStatus) {
+                if (cachedStatus) {
                     if (volumePercent < 5) {
-                        volumeStatus.textContent = window.t ? window.t('microphone.volumeNoSound') : '无声音';
-                        volumeStatus.style.color = '#dc3545';
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNoSound') : '无声音';
+                        cachedStatus.style.color = '#dc3545';
                     } else if (volumePercent < 20) {
-                        volumeStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
-                        volumeStatus.style.color = '#ffc107';
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
+                        cachedStatus.style.color = '#ffc107';
                     } else if (volumePercent > 90) {
-                        volumeStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
-                        volumeStatus.style.color = '#fd7e14';
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
+                        cachedStatus.style.color = '#fd7e14';
                     } else {
-                        volumeStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
-                        volumeStatus.style.color = '#28a745';
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
+                        cachedStatus.style.color = '#28a745';
                     }
                 }
 
                 // 更新提示文字
-                if (volumeHint) {
+                if (cachedHint) {
                     if (volumePercent < 5) {
-                        volumeHint.textContent = window.t ? window.t('microphone.volumeHintNoSound') : '检测不到声音，请检查麦克风';
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintNoSound') : '检测不到声音，请检查麦克风';
                     } else if (volumePercent < 20) {
-                        volumeHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
                     } else {
-                        volumeHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
                     }
                 }
             } else {
                 // 未录音状态
-                volumeBarFill.style.width = '0%';
-                volumeBarFill.style.backgroundColor = '#4f8cff';
-                if (volumeStatus) {
-                    volumeStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
-                    volumeStatus.style.color = '#888';
+                cachedBarFill.style.width = '0%';
+                cachedBarFill.style.backgroundColor = '#4f8cff';
+                if (cachedStatus) {
+                    cachedStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
+                    cachedStatus.style.color = '#888';
                 }
-                if (volumeHint) {
-                    volumeHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
+                if (cachedHint) {
+                    cachedHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
                 }
             }
 
@@ -4000,8 +4018,14 @@ function init_app() {
                 try {
                     globalAnalyser = audioPlayerContext.createAnalyser();
                     globalAnalyser.fftSize = 2048;
-                    globalAnalyser.connect(audioPlayerContext.destination);
-                    console.log('[Audio] 全局分析器已创建并连接');
+                    // 插入扬声器音量增益节点: source → analyser → gainNode → destination
+                    speakerGainNode = audioPlayerContext.createGain();
+                    const vol = (typeof window.getSpeakerVolume === 'function')
+                        ? window.getSpeakerVolume() : 100;
+                    speakerGainNode.gain.value = vol / 100;
+                    globalAnalyser.connect(speakerGainNode);
+                    speakerGainNode.connect(audioPlayerContext.destination);
+                    console.log('[Audio] 全局分析器和扬声器增益节点已创建并连接');
                 } catch (e) {
                     console.error('[Audio] 创建分析器失败:', e);
                 }
@@ -6614,9 +6638,9 @@ function init_app() {
                 speakerVolume = newVol;
                 speakerValue.textContent = `${newVol}%`;
 
-                // 实时更新 AudioManager 主音量
-                if (window.AM) {
-                    window.AM.setVolume(newVol);
+                // 实时更新扬声器增益节点
+                if (speakerGainNode) {
+                    speakerGainNode.gain.setTargetAtTime(newVol / 100, speakerGainNode.context.currentTime, 0.05);
                 }
             });
 
