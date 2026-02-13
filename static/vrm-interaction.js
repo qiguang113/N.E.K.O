@@ -150,6 +150,24 @@ class VRMInteraction {
 
                 // 开始拖动时，临时禁用按钮的 pointer-events
                 this._disableButtonPointerEvents();
+            } else if (e.button === 2) { // 右键 - 相机视角旋转
+                this.isDragging = true;
+                this.dragMode = 'orbit';
+                this.previousMousePosition = { x: e.clientX, y: e.clientY };
+                canvas.style.cursor = 'crosshair';
+                e.preventDefault();
+                e.stopPropagation();
+
+                // 记录模型中心和它在屏幕上的 NDC 坐标，旋转过程中用于保持模型屏幕位置不变
+                if (this.manager.camera && this.manager.currentModel?.scene) {
+                    const box = new THREE.Box3().setFromObject(this.manager.currentModel.scene);
+                    this._orbitCenter = box.getCenter(new THREE.Vector3());
+                    // 将模型中心投影到 NDC 坐标（-1~1），记录模型在屏幕上的位置
+                    const projected = this._orbitCenter.clone().project(this.manager.camera);
+                    this._orbitNDC = { x: projected.x, y: projected.y };
+                }
+
+                this._disableButtonPointerEvents();
             }
         };
 
@@ -210,6 +228,56 @@ class VRMInteraction {
 
                 // 应用位置（按钮和锁图标位置由 _startUIUpdateLoop 自动更新）
                 this.manager.currentModel.scene.position.copy(finalPosition);
+            } else if (this.dragMode === 'orbit' && this.manager.camera && this._orbitCenter) {
+                // 右键拖拽：相机绕模型中心旋转，同时补偿 lookAt 使模型保持在屏幕原位
+                const camera = this.manager.camera;
+                const orbitCenter = this._orbitCenter;
+
+                // 旋转灵敏度（弧度/像素）
+                const orbitSpeed = 0.005;
+
+                // 计算从旋转中心到相机的偏移量
+                const offset = camera.position.clone().sub(orbitCenter);
+                const radius = offset.length();
+
+                // 球坐标：theta 为水平角（绕Y轴），phi 为俯仰角
+                let theta = Math.atan2(offset.x, offset.z);
+                let phi = Math.acos(Math.max(-1, Math.min(1, offset.y / radius)));
+
+                // 根据鼠标移动调整角度
+                theta -= deltaX * orbitSpeed;
+                phi -= deltaY * orbitSpeed;
+
+                // 限制俯仰角避免翻转（5° ~ 175°）
+                phi = Math.max(0.087, Math.min(Math.PI - 0.087, phi));
+
+                // 转回笛卡尔坐标
+                offset.x = radius * Math.sin(phi) * Math.sin(theta);
+                offset.y = radius * Math.cos(phi);
+                offset.z = radius * Math.sin(phi) * Math.cos(theta);
+
+                // 更新相机位置
+                camera.position.copy(orbitCenter).add(offset);
+
+                // 先临时看向旋转中心，建立新的相机坐标系
+                camera.lookAt(orbitCenter);
+
+                // 用 NDC 坐标补偿，使模型中心保持在原来的屏幕位置
+                const nx = this._orbitNDC.x;
+                const ny = this._orbitNDC.y;
+                const halfHeight = radius * Math.tan(camera.fov * Math.PI / 360);
+                const halfWidth = halfHeight * camera.aspect;
+
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                // target = 模型中心 - NDC偏移量（使模型投影回原屏幕位置）
+                const newTarget = orbitCenter.clone()
+                    .sub(right.clone().multiplyScalar(nx * halfWidth))
+                    .sub(up.clone().multiplyScalar(ny * halfHeight));
+
+                camera.lookAt(newTarget);
+                this.manager._cameraTarget = newTarget;
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -270,26 +338,23 @@ class VRMInteraction {
             const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
 
             if (this.manager.currentModel.scene && this.manager.camera) {
-                const modelCenter = new THREE.Vector3();
-                if (this.manager.controls) {
-                    modelCenter.copy(this.manager.controls.target);
-                } else {
-                    this.manager.currentModel.scene.getWorldPosition(modelCenter);
-                    modelCenter.y += 1.0;
-                }
+                // 使用统一的 _cameraTarget 作为缩放中心
+                const zoomCenter = this.manager._cameraTarget
+                    ? this.manager._cameraTarget.clone()
+                    : new THREE.Vector3(0, 0, 0);
 
-                const oldDistance = this.manager.camera.position.distanceTo(modelCenter);
-                const minDist = 0.5;  // 限制最小距离，防止放大后移动时只能看到腿
+                const oldDistance = this.manager.camera.position.distanceTo(zoomCenter);
+                const minDist = 0.5;
                 const maxDist = 20.0;
 
                 let newDistance = oldDistance * zoomFactor;
                 newDistance = Math.max(minDist, Math.min(maxDist, newDistance));
 
                 const direction = new THREE.Vector3()
-                    .subVectors(this.manager.camera.position, modelCenter)
+                    .subVectors(this.manager.camera.position, zoomCenter)
                     .normalize();
 
-                this.manager.camera.position.copy(modelCenter)
+                this.manager.camera.position.copy(zoomCenter)
                     .add(direction.multiplyScalar(newDistance));
 
                 if (this.manager.controls && this.manager.controls.update) {
@@ -305,6 +370,11 @@ class VRMInteraction {
             if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
         };
 
+        // 7. 禁止右键菜单（canvas 上）
+        this.contextMenuHandler = (e) => {
+            e.preventDefault();
+        };
+
         // 绑定事件
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         document.addEventListener('mousemove', this.dragHandler); // 绑定到 document 以支持拖出画布
@@ -314,6 +384,7 @@ class VRMInteraction {
         this._wheelListenerOptions = { passive: false, capture: true };
         canvas.addEventListener('wheel', this.wheelHandler, this._wheelListenerOptions);
         canvas.addEventListener('auxclick', this.auxClickHandler);
+        canvas.addEventListener('contextmenu', this.contextMenuHandler);
 
 
     }
@@ -459,6 +530,10 @@ class VRMInteraction {
             canvas.removeEventListener('wheel', this.wheelHandler, this._wheelListenerOptions || { capture: true });
             this.wheelHandler = null;
             this._wheelListenerOptions = null;
+        }
+        if (this.contextMenuHandler) {
+            canvas.removeEventListener('contextmenu', this.contextMenuHandler);
+            this.contextMenuHandler = null;
         }
     }
 
@@ -1101,6 +1176,26 @@ class VRMInteraction {
             }
         }
 
+        // 获取当前相机位置、朝向和观察目标
+        let cameraPosition = null;
+        if (this.manager.camera) {
+            const target = this.manager._cameraTarget || new THREE.Vector3(0, 0, 0);
+            cameraPosition = {
+                x: this.manager.camera.position.x,
+                y: this.manager.camera.position.y,
+                z: this.manager.camera.position.z,
+                // 保存四元数（精确的相机朝向，避免 lookAt 转换误差）
+                qx: this.manager.camera.quaternion.x,
+                qy: this.manager.camera.quaternion.y,
+                qz: this.manager.camera.quaternion.z,
+                qw: this.manager.camera.quaternion.w,
+                // 保存观察目标（用于 zoom/orbit 的中心点）
+                targetX: target.x,
+                targetY: target.y,
+                targetZ: target.z
+            };
+        }
+
         // 异步保存，不阻塞交互
         if (this.manager.core && typeof this.manager.core.saveUserPreferences === 'function') {
             this.manager.core.saveUserPreferences(
@@ -1109,7 +1204,8 @@ class VRMInteraction {
                 scale,
                 rotation,
                 displayInfo,
-                viewportInfo
+                viewportInfo,
+                cameraPosition
             ).then(success => {
                 if (!success) {
                     console.warn('[VRM] 自动保存位置失败');
