@@ -1297,7 +1297,8 @@
       "disabledError": "에이전트 모드 비활성화됨(부분 정리 실패)",
       "enableFailed": "활성화 실패",
       "disconnected": "서버 연결이 끊어졌습니다.",
-      "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다."
+      "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다.",
+      "freeModelWarning": "할당량 제한으로 인해 무료 모델은 Agent 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다."
     },
     "taskHud": {
       "title": "에이전트 작업",

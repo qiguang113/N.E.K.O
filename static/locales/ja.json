@@ -1297,7 +1297,8 @@
       "disabledError": "エージェントモード無効 (部分的なクリーンアップに失敗)",
       "enableFailed": "有効化に失敗",
       "disconnected": "サーバー接続が失われました",
-      "agentDisconnected": "エージェントサーバー接続が失われました"
+      "agentDisconnected": "エージェントサーバー接続が失われました",
+      "freeModelWarning": "クォータの制限により、無料モデルではAgentモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。"
     },
     "taskHud": {
       "title": "エージェントタスク",

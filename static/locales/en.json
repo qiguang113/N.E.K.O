@@ -1297,7 +1297,8 @@
             "disabledError": "Agent mode disabled (partial cleanup failed)",
             "enableFailed": "Enable failed",
             "disconnected": "Server connection lost",
-            "agentDisconnected": "Agent server connection lost"
+            "agentDisconnected": "Agent server connection lost",
+            "freeModelWarning": "Due to quota limitations, free models are prone to blocking in Agent mode. It is recommended to switch to a paid model."
         },
         "taskHud": {
             "title": "Agent Tasks",

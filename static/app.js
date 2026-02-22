@@ -918,11 +918,11 @@ function init_app() {
                     }
                 } else if (response.type === 'session_preparing') {
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
-                    // 显示持续性的准备中提示
-                    const preparingMessage = response.input_mode === 'text'
-                        ? (window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...')
-                        : (window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...');
-                    showVoicePreparingToast(preparingMessage);
+                    // 显示持续性的准备中提示（仅语音模式，文本模式用 statusToast 即可）
+                    if (response.input_mode !== 'text') {
+                        const preparingMessage = window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...';
+                        showVoicePreparingToast(preparingMessage);
+                    }
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     // 延迟 500ms 以确保准备中提示不会消失得太快
@@ -2944,9 +2944,9 @@ function init_app() {
         // 确保样式始终一致（每次更新时都重新设置）
         toast.style.cssText = `
             position: fixed;
-            top: 50%;
+            bottom: 18%;
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translateX(-50%);
             background-image: url('/static/icons/reminder_blue.png');
             background-size: 100% 100%;
             background-position: center;
@@ -2976,11 +2976,11 @@ function init_app() {
                 @keyframes voiceToastFadeIn {
                     from {
                         opacity: 0;
-                        transform: translate(-50%, -50%) scale(0.8);
+                        transform: translateX(-50%) scale(0.8);
                     }
                     to {
                         opacity: 1;
-                        transform: translate(-50%, -50%) scale(1);
+                        transform: translateX(-50%) scale(1);
                     }
                 }
                 @keyframes voiceToastPulse {
@@ -3046,9 +3046,9 @@ function init_app() {
         // 确保样式始终一致（和前两个弹窗一样的大小）
         toast.style.cssText = `
             position: fixed;
-            top: 50%;
+            bottom: 18%;
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translateX(-50%);
             background-image: url('/static/icons/reminder_midori.png');
             background-size: 100% 100%;
             background-position: center;
@@ -3491,7 +3491,6 @@ function init_app() {
 
             // 显示准备中提示
             showStatusToast(window.t ? window.t('app.initializingText') : '正在初始化文本对话...', 3000);
-            showVoicePreparingToast(window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...');
 
             // 创建一个 Promise 来等待 session_started 消息（复用已有模式）
             const sessionStartPromise = new Promise((resolve, reject) => {
@@ -6441,6 +6440,34 @@ function init_app() {
 
                         // 启动定时检查器
                         window.startAgentAvailabilityCheck();
+
+                        // 免费模型警告：Agent 模式开启后检查是否为免费版
+                        try {
+                            const gateResp = await fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null);
+                            if (gateResp?.agent_api_gate?.is_free_version) {
+                                const msg = window.t ? window.t('agent.status.freeModelWarning') : '由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型';
+                                const warn = document.createElement('div');
+                                warn.textContent = msg;
+                                warn.style.cssText = `
+                                    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                                    z-index: 999999; max-width: 420px; padding: 20px 28px;
+                                    background: rgba(30, 30, 30, 0.92); color: #ffcc00;
+                                    border: 1.5px solid rgba(255, 204, 0, 0.5); border-radius: 12px;
+                                    font-size: 14px; line-height: 1.6; text-align: center;
+                                    backdrop-filter: blur(8px); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+                                    opacity: 0; transition: opacity 0.35s ease;
+                                    pointer-events: auto; cursor: pointer;
+                                `;
+                                document.body.appendChild(warn);
+                                requestAnimationFrame(() => { warn.style.opacity = '1'; });
+                                const dismiss = () => {
+                                    warn.style.opacity = '0';
+                                    setTimeout(() => warn.remove(), 350);
+                                };
+                                warn.addEventListener('click', dismiss);
+                                setTimeout(dismiss, 8000);
+                            }
+                        } catch (_) { }
                     } catch (e) {
                         if (isExpired()) return;
                         agentStateMachine.endOperation(false, true);
@@ -8374,8 +8401,6 @@ function init_app() {
             for (const link of validLinks) {
                 const a = document.createElement('a');
                 a.href = link.safeUrl;
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
                 a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
                 a.style.cssText = `
                     display: block;
@@ -8385,9 +8410,18 @@ function init_app() {
                     padding-right: 20px;
                     word-break: break-all;
                     font-size: 12px;
+                    cursor: pointer;
                 `;
                 a.addEventListener('mouseenter', () => { a.style.textDecoration = 'underline'; });
                 a.addEventListener('mouseleave', () => { a.style.textDecoration = 'none'; });
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (window.electronShell && window.electronShell.openExternal) {
+                        window.electronShell.openExternal(link.safeUrl);
+                    } else {
+                        window.open(link.safeUrl, '_blank', 'noopener,noreferrer');
+                    }
+                });
                 linkCard.appendChild(a);
             }
 

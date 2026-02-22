@@ -1297,7 +1297,8 @@
             "disabledError": "Agent模式已關閉（部分清理失敗）",
             "enableFailed": "開啓失敗",
             "disconnected": "服務器連接已斷開",
-            "agentDisconnected": "Agent 服務器連接已斷開"
+            "agentDisconnected": "Agent 服務器連接已斷開",
+            "freeModelWarning": "由於限額問題，免費模型使用Agent模式容易阻塞，建議您切換至自費模型"
         },
         "taskHud": {
             "title": "Agent 任務",
