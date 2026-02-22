@@ -202,10 +202,14 @@
         }
         state.suppressChange = false;
 
-        // Trigger HUB update to reflect programmatic state changes
+
         if (typeof window.checkAndToggleTaskHUD === 'function') {
+            console.log('[AgentUIv2] Calling checkAndToggleTaskHUD from render()');
             window.checkAndToggleTaskHUD();
+        } else {
+            console.log('[AgentUIv2] checkAndToggleTaskHUD not found during render()');
         }
+
     }
 
     function bindEvents() {

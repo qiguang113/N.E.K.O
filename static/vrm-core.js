@@ -175,6 +175,13 @@ class VRMCore {
             this.manager.interaction.setLocked(locked);
         }
 
+        if (!locked) {
+            const vrmContainer = document.getElementById('vrm-container');
+            if (vrmContainer) {
+                vrmContainer.style.opacity = '1';
+            }
+        }
+
         if (this.manager.controls) {
             this.manager.controls.enablePan = !locked;
         }

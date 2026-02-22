@@ -6989,10 +6989,18 @@ function init_app() {
     }
 
     function checkAndToggleTaskHUD() {
-        const masterCheckbox = document.getElementById('live2d-agent-master');
-        const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const browserCheckbox = document.getElementById('live2d-agent-browser');
-        const userPlugin = document.getElementById('live2d-agent-user-plugin');
+        const getEl = (ids) => {
+            for (let id of ids) {
+                const el = document.getElementById(id);
+                if (el) return el;
+            }
+            return null;
+        };
+
+        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master']);
+        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
         // Extract DOM states
         const domMaster = masterCheckbox ? masterCheckbox.checked : false;
@@ -7049,27 +7057,38 @@ function init_app() {
 
     // 监听 Agent 子开关变化来控制 HUD 显示
     window.addEventListener('live2d-floating-buttons-ready', () => {
-        // 延迟确保元素已创建
-        setTimeout(() => {
-            const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-            const browserCheckbox = document.getElementById('live2d-agent-browser');
+        // 等待 agent_ui_v2 初始化或者直接靠 DOM
+        const bindHUD = () => {
+            const getEl = (ids) => {
+                for (let id of ids) {
+                    const el = document.getElementById(id);
+                    if (el) return el;
+                }
+                return null;
+            };
 
-            const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
+            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-            if (keyboardCheckbox) {
-                keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            if (!keyboardCheckbox || !browserCheckbox) {
+                // 如果还不存在，稍后再试（应对动态创建的情况，比如 VRM 模式下的懒加载 popup）
+                setTimeout(bindHUD, 500);
+                return;
             }
-            if (browserCheckbox) {
-                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
 
+            keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            // Retry HUD show: snapshot may have enabled agent before live2dManager was ready
+            
             checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
-        }, 100);
+        };
+        
+        // 由于不同模型(Live2D/VRM)构建 popup DOM 的时机不同，这里采用递归轮询直到元素出现为止
+        setTimeout(bindHUD, 100);
     });
     // Agent 任务 HUD 轮询逻辑结束
 
