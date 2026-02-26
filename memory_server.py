@@ -18,7 +18,7 @@ import logging
 import argparse
 from utils.frontend_utils import get_timestamp
 
-# Setup logger
+# 配置日志
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -26,6 +26,17 @@ class HistoryRequest(BaseModel):
     input_history: str
 
 app = FastAPI()
+
+
+# ── 健康检查 / 指纹端点 ──────────────────────────────────────────
+@app.get("/health")
+async def health():
+    """返回带 N.E.K.O 签名的健康响应，供 launcher/前端识别，
+    以区分当前服务与随机占用该端口的其他进程。"""
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response("memory", instance_id=INSTANCE_ID)
+
 
 def validate_lanlan_name(name: str) -> str:
     name = name.strip()
@@ -356,7 +367,7 @@ async def new_dialog(lanlan_name: str):
     result = f"\n========以下是{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
     result += f"现在时间是{get_timestamp()}。开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in recent_history_manager.get_recent_history(lanlan_name):
-        if type(i.content) == str:
+        if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()
             result += f"{name_mapping[i.type]} | {cleaned_content}\n"
         else:

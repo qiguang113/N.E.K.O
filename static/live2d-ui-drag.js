@@ -114,9 +114,11 @@ Live2DManager.prototype.closePopupById = function (buttonId) {
     }
 
     popup.style.opacity = '0';
-    popup.style.transform = 'translateX(-10px)';
+    const closeOpensLeft = popup.dataset.opensLeft === 'true';
+    popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
     setTimeout(() => {
         popup.style.display = 'none';
+        delete popup.dataset.opensLeft;
     }, 200);
 
     const buttonEntry = this._floatingButtons[buttonId];
@@ -386,8 +388,8 @@ window.createChatModeToggle = function(options) {
     label.setAttribute('data-i18n', labelKey);
     label.htmlFor = checkboxId;
     Object.assign(label.style, {
-        fontSize: '10px',
-        color: '#666',
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
         cursor: 'pointer',
         whiteSpace: 'nowrap'
     });
@@ -504,6 +506,7 @@ window.createVisionOnlyToggle = function(checkboxId) {
 Live2DManager.prototype.showPopup = function (buttonId, popup) {
     // 确保 _popupTimers 已初始化
     this._popupTimers = this._popupTimers || {};
+    const popupUi = window.AvatarPopupUI || null;
 
     // 检查当前状态
     const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
@@ -516,7 +519,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
     // 如果是设置弹出框，每次显示时更新开关状态（确保与 app.js 同步）
     if (buttonId === 'settings') {
-        const focusCheckbox = popup.querySelector('#live2d-focus-mode');
+        const mergeCheckbox = document.querySelector('#live2d-merge-messages');
+        const focusCheckbox = document.querySelector('#live2d-focus-mode');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
         const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
 
@@ -543,9 +547,19 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             }
         };
 
+        // 更新 merge messages checkbox 状态和视觉样式
+        if (mergeCheckbox && typeof window.mergeMessagesEnabled !== 'undefined') {
+            const newChecked = window.mergeMessagesEnabled;
+            if (mergeCheckbox.checked !== newChecked) {
+                mergeCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(mergeCheckbox);
+            });
+        }
+
         // 更新 focus mode checkbox 状态和视觉样式
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
-            // "允许打断"按钮值与 focusModeEnabled 相反
             const newChecked = !window.focusModeEnabled;
             if (focusCheckbox.checked !== newChecked) {
                 focusCheckbox.checked = newChecked;
@@ -580,7 +594,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         // 同步搭话方式选项状态
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
-                const checkbox = popup.querySelector(`#live2d-proactive-${config.mode}-chat`);
+                const checkbox = document.querySelector(`#live2d-proactive-${config.mode}-chat`);
                 if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
                     const newChecked = window[config.globalVarName];
                     if (checkbox.checked !== newChecked) {
@@ -611,7 +625,10 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
         // 如果已经显示，则隐藏
         popup.style.opacity = '0';
-        popup.style.transform = 'translateX(-10px)';
+        const closingOpensLeft = popup.dataset.opensLeft === 'true';
+        popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+        const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
+        if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
 
         // 如果是 agent 弹窗关闭，派发关闭事件
         if (buttonId === 'agent') {
@@ -620,12 +637,17 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
         setTimeout(() => {
             popup.style.display = 'none';
+            delete popup.dataset.opensLeft;
             // 重置位置和样式
-            popup.style.left = '100%';
-            popup.style.right = 'auto';
-            popup.style.top = '0';
-            popup.style.marginLeft = '8px';
-            popup.style.marginRight = '0';
+            if (popupUi && typeof popupUi.resetPopupPosition === 'function') {
+                popupUi.resetPopupPosition(popup, { left: '100%', top: '0' });
+            } else {
+                popup.style.left = '100%';
+                popup.style.right = 'auto';
+                popup.style.top = '0';
+                popup.style.marginLeft = '8px';
+                popup.style.marginRight = '0';
+            }
             // 重置高度限制，确保下次打开时状态一致
             if (buttonId === 'settings' || buttonId === 'agent') {
                 popup.style.maxHeight = '200px';
@@ -668,39 +690,17 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
             // 再次使用RAF确保布局稳定
             requestAnimationFrame(() => {
-                const popupRect = popup.getBoundingClientRect();
-                const screenWidth = window.innerWidth;
-                const screenHeight = window.innerHeight;
-                const rightMargin = 20; // 距离屏幕右侧的安全边距
-                const bottomMargin = 60; // 距离屏幕底部的安全边距（考虑系统任务栏，Windows任务栏约40-48px）
-
-                // 检查是否超出屏幕右侧
-                const popupRight = popupRect.right;
-                if (popupRight > screenWidth - rightMargin) {
-                    // 超出右边界，改为向左弹出
-                    // 获取按钮的实际宽度来计算正确的偏移
-                    const button = document.getElementById(`live2d-btn-${buttonId}`);
-                    const buttonWidth = button ? button.offsetWidth : 48;
-                    const gap = 8;
-
-                    // 让弹出框完全移到按钮左侧，不遮挡按钮
-                    popup.style.left = 'auto';
-                    popup.style.right = '0';
-                    popup.style.marginLeft = '0';
-                    popup.style.marginRight = `${buttonWidth + gap}px`;
-                    popup.style.transform = 'translateX(10px)'; // 反向动画
-                }
-
-                // 检查是否超出屏幕底部（设置弹出框或其他较高的弹出框）
-                if (buttonId === 'settings' || buttonId === 'agent') {
-                    const popupBottom = popupRect.bottom;
-                    if (popupBottom > screenHeight - bottomMargin) {
-                        // 计算需要向上移动的距离
-                        const overflow = popupBottom - (screenHeight - bottomMargin);
-                        const currentTop = parseInt(popup.style.top) || 0;
-                        const newTop = currentTop - overflow;
-                        popup.style.top = `${newTop}px`;
-                    }
+                if (popupUi && typeof popupUi.positionPopup === 'function') {
+                    const pos = popupUi.positionPopup(popup, {
+                        buttonId,
+                        buttonPrefix: 'live2d-btn-',
+                        triggerPrefix: 'live2d-trigger-icon-',
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8
+                    });
+                    popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
                 }
 
                 // 显示弹出框
@@ -714,13 +714,21 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic' && buttonId !== 'screen') {
             this._popupTimers[buttonId] = setTimeout(() => {
                 popup.style.opacity = '0';
-                popup.style.transform = popup.style.right === '100%' ? 'translateX(10px)' : 'translateX(-10px)';
+                const opensLeft = popup.dataset.opensLeft === 'true';
+                popup.style.transform = opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+                const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
+                if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
                 setTimeout(() => {
                     popup.style.display = 'none';
+                    delete popup.dataset.opensLeft;
                     // 重置位置
-                    popup.style.left = '100%';
-                    popup.style.right = 'auto';
-                    popup.style.top = '0';
+                    if (popupUi && typeof popupUi.resetPopupPosition === 'function') {
+                        popupUi.resetPopupPosition(popup, { left: '100%', top: '0' });
+                    } else {
+                        popup.style.left = '100%';
+                        popup.style.right = 'auto';
+                        popup.style.top = '0';
+                    }
                 }, 200);
                 this._popupTimers[buttonId] = null;
             }, 1000);

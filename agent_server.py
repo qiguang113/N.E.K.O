@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mimetypes
 mimetypes.add_type("application/javascript", ".js")
@@ -15,23 +16,28 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
+from utils.logger_config import setup_logging, ThrottledLogger
+
+# Configure logging as early as possible so import-time failures are persisted.
+logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
+
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
-from brain.planner import TaskPlanner
-from brain.analyzer import ConversationAnalyzer
-from brain.computer_use import ComputerUseAdapter
-from brain.browser_use_adapter import BrowserUseAdapter
-from brain.deduper import TaskDeduper
-from brain.task_executor import DirectTaskExecutor
-from brain.agent_session import get_session_manager
 from utils.config_manager import get_config_manager
 from main_logic.agent_event_bus import AgentServerEventBridge
+try:
+    from brain.planner import TaskPlanner
+    from brain.analyzer import ConversationAnalyzer
+    from brain.computer_use import ComputerUseAdapter
+    from brain.browser_use_adapter import BrowserUseAdapter
+    from brain.deduper import TaskDeduper
+    from brain.task_executor import DirectTaskExecutor
+    from brain.agent_session import get_session_manager
+except Exception as e:
+    logger.exception(f"[Agent] Module import failed during startup: {e}")
+    raise
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
-
-# Configure logging
-from utils.logger_config import setup_logging, ThrottledLogger
-logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 
 class Modules:
@@ -51,8 +57,11 @@ class Modules:
     computer_use_running: bool = False
     active_computer_use_task_id: Optional[str] = None
     active_computer_use_async_task: Optional[asyncio.Task] = None
+    # Browser-use task tracking
+    active_browser_use_task_id: Optional[str] = None
+    active_browser_use_bg_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
-    agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
+    agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
     # 使用统一的速率限制日志记录器（业务逻辑层面）
@@ -65,7 +74,6 @@ class Modules:
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "not checked"},
-        "mcp": {"ready": False, "reason": "not checked"},
         "browser_use": {"ready": False, "reason": "not checked"},
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
@@ -91,6 +99,8 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
     """
     Best-effort refresh for computer-use adapter.
     Useful when API key/model settings were fixed after agent_server startup.
+    Does NOT block on LLM connectivity — call ``_fire_agent_llm_connectivity_check``
+    afterwards to probe the endpoint asynchronously.
     """
     current = Modules.computer_use
     if not force and current is not None and getattr(current, "init_ok", False):
@@ -99,14 +109,50 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
         refreshed = ComputerUseAdapter()
         Modules.computer_use = refreshed
         _rewire_computer_use_dependents()
-        if getattr(refreshed, "init_ok", False):
-            logger.info("[Agent] ComputerUse adapter refreshed successfully")
-            return True
-        logger.warning("[Agent] ComputerUse adapter refresh completed but still not ready")
-        return False
+        logger.info("[Agent] ComputerUse adapter rebuilt (connectivity pending)")
+        return True
     except Exception as e:
         logger.warning(f"[Agent] ComputerUse adapter refresh failed: {e}")
         return False
+
+
+async def _fire_agent_llm_connectivity_check() -> None:
+    """Probe the shared Agent-LLM endpoint in a background thread.
+
+    Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
+    so a single connectivity check covers both capabilities.  Updates
+    ``init_ok`` on the CUA adapter and refreshes the capability cache for
+    *both* computer_use and browser_use.
+    """
+    adapter = Modules.computer_use
+    if adapter is None:
+        return
+
+    def _probe():
+        return adapter.check_connectivity()
+
+    try:
+        ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
+        reason = "" if ok else (adapter.last_error or "Agent LLM unreachable")
+        _set_capability("computer_use", ok, reason)
+        # BrowserUse shares the same agent endpoint — mirror the LLM result
+        # but also respect its own import-readiness gate.
+        bu = Modules.browser_use
+        if bu is not None:
+            if not ok:
+                _set_capability("browser_use", False, reason)
+            elif not getattr(bu, "_ready_import", False):
+                _set_capability("browser_use", False, f"browser-use not installed: {bu.last_error}")
+            else:
+                _set_capability("browser_use", True, "")
+        if ok:
+            logger.info("[Agent] Agent-LLM connectivity check passed")
+        else:
+            logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
+    except Exception as e:
+        logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
+        _set_capability("computer_use", False, str(e))
+        _set_capability("browser_use", False, str(e))
 
 
 def _bump_state_revision() -> int:
@@ -160,6 +206,7 @@ async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> t
         res = await Modules.deduper.judge(query, candidates)
         return bool(res.get("duplicate")), res.get("matched_id")
     except Exception as e:
+        logger.warning(f"[Agent] Deduper judge failed: {e}")
         return False, None
 
 
@@ -256,10 +303,11 @@ async def _emit_task_result(
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
     try:
-        ok, reasons = get_config_manager().is_agent_api_ready()
-        return {"ready": ok, "reasons": reasons}
+        cm = get_config_manager()
+        ok, reasons = cm.is_agent_api_ready()
+        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
     except Exception as e:
-        return {"ready": False, "reasons": [f"Agent API check failed: {e}"]}
+        return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -364,6 +412,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
+        if not Modules.analyzer_enabled:
+            logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
+            return
         if event_id:
             ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
             Modules._background_tasks.add(ack_task)
@@ -517,24 +568,26 @@ async def _run_computer_use_task(
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
-    # Initialize queue if missing
     if Modules.computer_use_queue is None:
         Modules.computer_use_queue = asyncio.Queue()
     while True:
         try:
             await asyncio.sleep(0.05)
-            # If a task is running, wait until _run_computer_use_task marks it done
             if Modules.computer_use_running:
                 continue
-            # No active task: try to dequeue next
             if Modules.computer_use_queue.empty():
                 continue
+            if not Modules.analyzer_enabled or not Modules.agent_flags.get("computer_use_enabled", False):
+                while not Modules.computer_use_queue.empty():
+                    try:
+                        Modules.computer_use_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                continue
             next_task = await Modules.computer_use_queue.get()
-            # Validate registry presence
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
-            # Run task in thread pool (non-blocking for the scheduler)
             Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
                 tid, next_task.get("instruction", ""),
             ))
@@ -570,6 +623,9 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
 async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
     """Inner implementation, always called under analyze_lock."""
     try:
+        if not Modules.analyzer_enabled:
+            logger.info("[TaskExecutor] Skipping analysis: analyzer disabled (master switch off)")
+            return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
         # testUserPlugin: log before analysis when user_plugin_enabled is true
@@ -608,11 +664,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             pass
 
         if result is None:
-            # 没有检测到任务
             return
         
         if not result.has_task:
-            logger.debug(f"[TaskExecutor] No actionable task found")
+            logger.debug("[TaskExecutor] No actionable task found")
+            return
+
+        if not Modules.analyzer_enabled:
+            logger.info("[TaskExecutor] Skipping dispatch: analyzer disabled during analysis")
             return
         
         logger.info(f"[TaskExecutor] Task: {result.task_description}, method: {result.execution_method}")
@@ -686,16 +745,28 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning(f"[ComputerUse] Task requires ComputerUse but it's disabled")
+                logger.warning("[ComputerUse] Task requires ComputerUse but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
-                # Session management for multi-turn browser tasks
                 sm = get_session_manager()
                 bu_session = sm.get_or_create(None, "browser_use")
                 bu_session.add_task(result.task_description)
 
                 bu_task_id = str(uuid.uuid4())
                 bu_start = _now_iso()
+                bu_info = {
+                    "id": bu_task_id,
+                    "type": "browser_use",
+                    "status": "running",
+                    "start_time": bu_start,
+                    "params": {"instruction": result.task_description},
+                    "lanlan_name": lanlan_name,
+                    "session_id": bu_session.session_id,
+                    "result": None,
+                    "error": None,
+                }
+                Modules.task_registry[bu_task_id] = bu_info
+                Modules.active_browser_use_task_id = bu_task_id
                 try:
                     await _emit_main_event(
                         "task_update", lanlan_name,
@@ -720,6 +791,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         else:
                             summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
                     bu_session.complete_task(result_detail or summary, success)
+                    bu_info["status"] = "completed" if success else "failed"
+                    bu_info["result"] = bres
                     await _emit_task_result(
                         lanlan_name,
                         channel="browser_use",
@@ -731,7 +804,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
-                            task={"id": bu_task_id, "status": "completed" if success else "failed",
+                            task={"id": bu_task_id, "status": bu_info["status"],
                                   "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
                                   "session_id": bu_session.session_id},
                         )
@@ -739,6 +812,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         pass
                 except Exception as e:
                     logger.warning(f"[BrowserUse] Failed: {e}")
+                    bu_info["status"] = "failed"
+                    bu_info["error"] = str(e)[:500]
                     bu_session.complete_task(str(e), success=False)
                     try:
                         await _emit_task_result(
@@ -761,6 +836,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                     except Exception:
                         pass
+                finally:
+                    Modules.active_browser_use_task_id = None
             else:
                 logger.warning("[BrowserUse] Task requires BrowserUse but it is disabled")
         
@@ -782,28 +859,12 @@ async def startup():
     Modules.planner = TaskPlanner(computer_use=Modules.computer_use)
     Modules.analyzer = ConversationAnalyzer()
     _rewire_computer_use_dependents()
-    # Prime capability cache cheaply at startup
-    try:
-        if Modules.computer_use:
-            cu = Modules.computer_use.is_available()
-            reasons = cu.get("reasons", []) if isinstance(cu, dict) else []
-            _set_capability("computer_use", bool(cu.get("ready")) if isinstance(cu, dict) else False, reasons[0] if reasons else "")
-    except Exception:
-        _set_capability("computer_use", False, "Computer Use check failed")
-    try:
-        if Modules.browser_use:
-            bu = Modules.browser_use.is_available()
-            reasons = bu.get("reasons", []) if isinstance(bu, dict) else []
-            _set_capability("browser_use", bool(bu.get("ready")) if isinstance(bu, dict) else False, reasons[0] if reasons else "")
-    except Exception:
-        _set_capability("browser_use", False, "Browser Use check failed")
+    # Both CUA and BrowserUse share the agent LLM — default to "not connected"
+    # and probe in background.  The single check updates both capability caches.
+    _set_capability("computer_use", False, "connectivity check pending")
+    _set_capability("browser_use", False, "connectivity check pending")
+    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     
-    # Warm up router discovery
-    try:
-        await Modules.task_executor.refresh_capabilities()
-    except Exception:
-        pass
-
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
             url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
@@ -851,7 +912,13 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "agent_flags": Modules.agent_flags}
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response(
+        "agent",
+        instance_id=INSTANCE_ID,
+        extra={"agent_flags": Modules.agent_flags},
+    )
 
 
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
@@ -948,15 +1015,48 @@ async def get_task(task_id: str):
     raise HTTPException(404, "task not found")
 
 
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a specific running task."""
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(404, "task not found")
+    if info.get("status") not in ("queued", "running"):
+        return {"success": False, "error": "task is not active"}
+
+    task_type = info.get("type")
+    if task_type == "computer_use":
+        if Modules.computer_use:
+            Modules.computer_use.cancel_running()
+        if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
+            Modules.active_computer_use_async_task.cancel()
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+    elif task_type == "browser_use":
+        if Modules.browser_use:
+            Modules.browser_use.cancel_running()
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+    else:
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+
+    lanlan_name = info.get("lanlan_name")
+    try:
+        await _emit_main_event(
+            "task_update", lanlan_name,
+            task={"id": task_id, "status": "cancelled", "type": task_type,
+                  "end_time": _now_iso(), "error": "Cancelled by user"},
+        )
+    except Exception:
+        pass
+    logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
+    return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
 @app.get("/capabilities")
 async def capabilities():
-    if not Modules.planner:
-        raise HTTPException(503, "Planner not ready")
-    try:
-        caps = await Modules.planner.refresh_capabilities()
-        return {"success": True, "capabilities": caps}
-    except Exception as e:
-        return JSONResponse(content={"success": False, "capabilities": {}, "error": str(e)})
+    return {"success": True, "capabilities": {}}
 
 
 @app.get("/agent/flags")
@@ -986,7 +1086,6 @@ async def get_agent_state():
 @app.post("/agent/flags")
 async def set_agent_flags(payload: Dict[str, Any]):
     lanlan_name = (payload or {}).get("lanlan_name")
-    mf = (payload or {}).get("mcp_enabled")
     cf = (payload or {}).get("computer_use_enabled")
     bf = (payload or {}).get("browser_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
@@ -995,8 +1094,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
-    if gate.get("ready") is not True and any(x is True for x in (mf, cf, bf, uf)):
-        Modules.agent_flags["mcp_enabled"] = False
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf)):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
@@ -1007,44 +1105,22 @@ async def set_agent_flags(payload: Dict[str, Any]):
         return {"success": True, "agent_flags": Modules.agent_flags}
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
-    
-    # 1. Handle MCP Flag with Capability Check
-    if isinstance(mf, bool):
-        if mf: # Attempting to enable
-            if not Modules.planner:
-                Modules.agent_flags["mcp_enabled"] = False
-                Modules.notification = "无法开启 MCP: Planner 未就绪"
-                logger.warning("[Agent] Cannot enable MCP: Planner not ready")
-            else:
-                try:
-                    # Check actual availability
-                    caps = await Modules.planner.refresh_capabilities(force_refresh=False)
-                    if caps:
-                        _set_capability("mcp", True, "")
-                        Modules.agent_flags["mcp_enabled"] = True
-                    else:
-                        _set_capability("mcp", False, "MCP router unreachable or no servers discovered")
-                        Modules.agent_flags["mcp_enabled"] = False
-                        Modules.notification = "无法开启 MCP: 未发现可用工具或 Router 未连接"
-                        logger.warning("[Agent] Cannot enable MCP: No capabilities found")
-                except Exception as e:
-                    _set_capability("mcp", False, str(e))
-                    Modules.agent_flags["mcp_enabled"] = False
-                    Modules.notification = f"开启 MCP 失败: {str(e)}"
-                    logger.error(f"[Agent] Cannot enable MCP: Check failed {e}")
-        else: # Disabling
-            Modules.agent_flags["mcp_enabled"] = False
 
-    # 2. Handle Computer Use Flag with Capability Check
+    # 1. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
         if cf: # Attempting to enable
-            # If startup happened before API config was ready, try self-heal once.
-            if (not Modules.computer_use) or (not getattr(Modules.computer_use, "init_ok", False)):
+            if not Modules.computer_use:
                 _try_refresh_computer_use_adapter(force=True)
             if not Modules.computer_use:
                 Modules.agent_flags["computer_use_enabled"] = False
                 Modules.notification = "无法开启 Computer Use: 模块未加载"
                 logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
+            elif not getattr(Modules.computer_use, "init_ok", False):
+                # Connectivity not yet confirmed — kick off a check then
+                # optimistically enable; the check result will auto-disable
+                # if it fails.
+                Modules.agent_flags["computer_use_enabled"] = True
+                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
                     avail = Modules.computer_use.is_available()
@@ -1067,23 +1143,19 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            if not getattr(Modules, "browser_use", None):
+            bu = getattr(Modules, "browser_use", None)
+            if not bu:
                 Modules.agent_flags["browser_use_enabled"] = False
                 Modules.notification = "无法开启 Browser Use: 模块未加载"
+            elif not getattr(bu, "_ready_import", False):
+                Modules.agent_flags["browser_use_enabled"] = False
+                Modules.notification = f"无法开启 Browser Use: browser-use not installed: {bu.last_error}"
+            elif not getattr(Modules.computer_use, "init_ok", False):
+                Modules.agent_flags["browser_use_enabled"] = True
+                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
-                try:
-                    avail = Modules.browser_use.is_available()
-                    reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
-                    _set_capability("browser_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
-                    if avail.get("ready"):
-                        Modules.agent_flags["browser_use_enabled"] = True
-                    else:
-                        Modules.agent_flags["browser_use_enabled"] = False
-                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else '未知原因'
-                        Modules.notification = f"无法开启 Browser Use: {reason}"
-                except Exception as e:
-                    Modules.agent_flags["browser_use_enabled"] = False
-                    Modules.notification = f"开启 Browser Use 失败: {str(e)}"
+                Modules.agent_flags["browser_use_enabled"] = True
+                _set_capability("browser_use", True, "")
         else:
             Modules.agent_flags["browser_use_enabled"] = False
             
@@ -1148,7 +1220,6 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
-            Modules.agent_flags["mcp_enabled"] = False
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
@@ -1161,7 +1232,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"mcp_enabled", "computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})
@@ -1184,17 +1255,16 @@ async def computer_use_availability():
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
     if not Modules.computer_use:
-        # Try to recover adapter lazily when gate is already satisfied.
         _try_refresh_computer_use_adapter(force=True)
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     if not Modules.computer_use:
-        # Auto-update flag if module missing
         if Modules.agent_flags.get("computer_use_enabled"):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.notification = "Computer Use 模块未加载，已自动关闭"
         raise HTTPException(503, "ComputerUse not ready")
     if not getattr(Modules.computer_use, "init_ok", False):
-        _try_refresh_computer_use_adapter(force=True)
-    
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+
     status = Modules.computer_use.is_available()
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
@@ -1208,17 +1278,40 @@ async def computer_use_availability():
     return status
 
 
+@app.post("/notify_config_changed")
+async def notify_config_changed():
+    """Called by the main server after API-key / model config is saved.
+    Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
+    LLM connectivity check."""
+    _try_refresh_computer_use_adapter(force=True)
+    _rewire_computer_use_dependents()
+    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
+
+
 @app.get("/browser_use/availability")
 async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    if not Modules.browser_use:
+    bu = Modules.browser_use
+    if not bu:
         raise HTTPException(503, "BrowserUse not ready")
-    status = Modules.browser_use.is_available()
-    reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("browser_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
-    return status
+    if not getattr(bu, "_ready_import", False):
+        reason = f"browser-use not installed: {bu.last_error}"
+        _set_capability("browser_use", False, reason)
+        return {"enabled": True, "ready": False, "reasons": [reason], "provider": "browser-use"}
+    # LLM connectivity — reuse the shared agent-LLM check
+    cua = Modules.computer_use
+    if cua and not getattr(cua, "init_ok", False):
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    llm_ok = cua is not None and getattr(cua, "init_ok", False)
+    reasons = []
+    if not llm_ok:
+        reasons.append(cua.last_error if cua and cua.last_error else "Agent LLM not connected")
+    ready = llm_ok and getattr(bu, "_ready_import", False)
+    _set_capability("browser_use", ready, reasons[0] if reasons else "")
+    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
 
 
 @app.post("/computer_use/run")
@@ -1264,44 +1357,7 @@ async def browser_use_run(payload: Dict[str, Any]):
 
 @app.get("/mcp/availability")
 async def mcp_availability():
-    gate = _check_agent_api_gate()
-    if gate.get("ready") is not True:
-        return {"ready": False, "capabilities_count": 0, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    if not Modules.planner:
-        # Auto-update flag if planner missing
-        if Modules.agent_flags.get("mcp_enabled"):
-            Modules.agent_flags["mcp_enabled"] = False
-            Modules.notification = "Planner 模块未就绪，MCP 已自动关闭"
-        raise HTTPException(503, "Planner not ready")
-    try:
-        # 使用缓存检查可用性，避免每次都请求 MCP Router（缓存 TTL 10秒）
-        caps = await Modules.planner.refresh_capabilities(force_refresh=False)
-        count = len(caps or {})
-        ready = count > 0
-        reasons = [] if ready else ["MCP router unreachable or no servers discovered"]
-        _set_capability("mcp", ready, reasons[0] if reasons else "")
-        
-        # Auto-update flag if capability lost
-        if not ready and Modules.agent_flags.get("mcp_enabled"):
-            logger.info("[Agent] MCP capability lost, disabling flag")
-            Modules.agent_flags["mcp_enabled"] = False
-            Modules.notification = "MCP 服务连接断开，已自动关闭"
-        
-        # 使用统一的速率限制日志记录器
-        if Modules.throttled_logger is None:
-            Modules.throttled_logger = ThrottledLogger(logger, interval=15.0)
-        
-        # Log MCP availability check (throttled)
-        Modules.throttled_logger.info(
-            "mcp_availability", 
-            f"[MCP] Availability check - Found {count} capabilities, ready: {ready}"
-        )
-        
-        return {"ready": ready, "capabilities_count": count, "reasons": reasons}
-    except Exception as e:
-        logger.error(f"[MCP] Availability check failed: {e}")
-        _set_capability("mcp", False, str(e))
-        return {"ready": False, "capabilities_count": 0, "reasons": [str(e)]}
+    return {"ready": False, "capabilities_count": 0, "reasons": ["MCP 已移除"]}
 
 
 @app.get("/tasks")
@@ -1383,6 +1439,10 @@ async def admin_control(payload: Dict[str, Any]):
                     logger.warning(f"[Agent] Error awaiting cancelled background task: {res}")
         Modules._background_tasks.clear()
 
+        # Signal computer-use adapter to cancel at next step boundary
+        if Modules.computer_use:
+            Modules.computer_use.cancel_running()
+
         # Cancel any in-flight asyncio tasks and clear registry
         if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
             Modules.active_computer_use_async_task.cancel()
@@ -1404,6 +1464,26 @@ async def admin_control(payload: Dict[str, Any]):
             if Modules.computer_use_queue is not None:
                 while not Modules.computer_use_queue.empty():
                     await Modules.computer_use_queue.get()
+        except Exception:
+            pass
+        # Signal browser-use adapter to cancel at next step boundary
+        try:
+            if Modules.browser_use:
+                Modules.browser_use.cancel_running()
+                Modules.browser_use._stop_overlay()
+                Modules.browser_use._agents.clear()
+                try:
+                    if Modules.browser_use._browser_session is not None:
+                        await Modules.browser_use._remove_overlay(Modules.browser_use._browser_session)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+        Modules.active_browser_use_task_id = None
+        # Reset computer-use step history so stale context is cleared
+        try:
+            if Modules.computer_use:
+                Modules.computer_use.reset()
         except Exception:
             pass
         return {"success": True, "message": "all tasks terminated and cleared"}

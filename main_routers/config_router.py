@@ -10,7 +10,6 @@ Handles configuration-related API endpoints including:
 """
 
 import json
-import logging
 import os
 import asyncio
 import base64
@@ -20,17 +19,17 @@ import sys
 import time
 import tempfile
 
-from pathlib import Path
 from fastapi import APIRouter, Request
 import websockets
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.logger_config import get_module_logger
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # VRM 模型路径常量
 VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
@@ -682,6 +681,12 @@ async def get_steam_language():
             print("=" * 60)
             
             logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+            # Write back to ConfigManager so URL adjustment uses the same result
+            try:
+                from utils.config_manager import ConfigManager
+                ConfigManager._region_cache = not is_mainland_china
+            except Exception:
+                pass
         except Exception as geo_error:
             print(f"[GeoIP API DEBUG] Exception: {geo_error}")
             logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
@@ -984,6 +989,16 @@ async def update_core_config(request: Request):
             logger.error(f"重新加载配置失败: {reload_error}")
             return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
         
+        # 4. Notify agent_server to rebuild CUA adapter with fresh config
+        try:
+            import httpx
+            from config import TOOL_SERVER_PORT
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            logger.info("已通知 agent_server 刷新 CUA 适配器")
+        except Exception as notify_err:
+            logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
+
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
         return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
     except Exception as e:

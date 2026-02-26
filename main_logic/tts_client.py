@@ -7,15 +7,73 @@ import soxr
 import time
 import json
 import base64
-import logging
 import websockets
 import io
 import wave
 import aiohttp
 import asyncio
 from functools import partial
+from config import GSV_VOICE_PREFIX
 from utils.config_manager import get_config_manager
-logger = logging.getLogger(__name__)
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__, "Main")
+
+
+class CustomTTSVoiceFetchError(Exception):
+    """Raised when custom TTS voice list cannot be fetched from provider."""
+
+
+async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
+    """Fetch available custom TTS voices via provider adapter.
+
+    Args:
+        base_url: provider API base URL
+        provider: provider key (currently supports 'gptsovits')
+
+    Returns:
+        list[dict]: normalized voices with fields: voice_id/raw_id/name/description/version
+    """
+    if provider != 'gptsovits':
+        raise CustomTTSVoiceFetchError(f"Unsupported custom TTS provider: {provider}")
+
+    base_url = (base_url or "").strip().rstrip("/")
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base_url}/api/v3/voices") as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise CustomTTSVoiceFetchError(f"HTTP {resp.status}: {text[:200]}")
+                voices_data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        raise CustomTTSVoiceFetchError(str(e)) from e
+
+    voices = []
+    if not isinstance(voices_data, list):
+        logger.warning(f"GPT-SoVITS /api/v3/voices 返回了非列表格式: {type(voices_data).__name__}")
+        return voices
+
+    for idx, v in enumerate(voices_data):
+        if not isinstance(v, dict):
+            logger.warning(
+                "GPT-SoVITS /api/v3/voices 第 %d 项不是对象，已跳过: %s",
+                idx,
+                type(v).__name__,
+            )
+            continue
+        raw_id = v.get('id', '')
+        if not raw_id:
+            continue
+        voices.append({
+            'voice_id': f"{GSV_VOICE_PREFIX}{raw_id}",
+            'raw_id': raw_id,
+            'name': v.get('name', raw_id),
+            'description': v.get('description', ''),
+            'version': v.get('version', ''),
+        })
+
+    return voices
 
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
@@ -47,6 +105,19 @@ def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int,
     # 转回 int16
     resampled_int16 = (resampled_float * 32768.0).clip(-32768, 32767).astype(np.int16)
     return resampled_int16.tobytes()
+
+
+def _enqueue_error(response_queue, error_value):
+    """统一错误日志与错误消息入队。"""
+    if isinstance(error_value, str):
+        formatted_msg = error_value
+    else:
+        try:
+            formatted_msg = json.dumps(error_value, ensure_ascii=False, default=str)
+        except Exception:
+            formatted_msg = str(error_value)
+    logger.error(f"TTS错误: {formatted_msg}")
+    response_queue.put(("__error__", formatted_msg))
 
 
 def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id, free_mode=False):
@@ -101,10 +172,10 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             session_ready.set()
                             break
                         elif event_type == "tts.response.error":
-                            logger.error(f"TTS服务器错误: {event}")
+                            _enqueue_error(response_queue, event)
                             break
                 except Exception as e:
-                    logger.error(f"等待连接时出错: {e}")
+                    _enqueue_error(response_queue, e)
             
             # 等待连接成功
             try:
@@ -166,7 +237,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         event_type = event.get("type")
                         
                         if event_type == "tts.response.error":
-                            logger.error(f"TTS错误: {event}")
+                            _enqueue_error(response_queue, event)
                         elif event_type == "tts.response.audio.delta":
                             try:
                                 # StepFun 返回 BASE64 编码的完整音频（包含 wav header）
@@ -307,7 +378,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     event_type = event.get("type")
                                     
                                     if event_type == "tts.response.error":
-                                        logger.error(f"TTS错误: {event}")
+                                        _enqueue_error(response_queue, event)
                                     elif event_type == "tts.response.audio.delta":
                                         try:
                                             audio_b64 = event.get("data", {}).get("audio", "")
@@ -452,10 +523,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             session_ready.set()
                             break
                         elif event_type == "error":
-                            logger.error(f"TTS服务器错误: {event}")
+                            _enqueue_error(response_queue, event)
                             break
                 except Exception as e:
-                    logger.error(f"等待会话就绪时出错: {e}")
+                    _enqueue_error(response_queue, e)
             
             # 发送配置
             await ws.send(json.dumps(config_message))
@@ -486,7 +557,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         event_type = event.get("type")
                         
                         if event_type == "error":
-                            logger.error(f"TTS错误: {event}")
+                            _enqueue_error(response_queue, event)
                         elif event_type == "response.audio.delta":
                             try:
                                 audio_bytes = base64.b64decode(event.get("delta", ""))
@@ -587,10 +658,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         session_ready.set()
                                         break
                                     elif event_type == "error":
-                                        logger.error(f"等待期间收到错误: {event}")
+                                        _enqueue_error(response_queue, event)
                                         break
                             except Exception as e:
-                                logger.error(f"wait_ready 异常: {e}")
+                                _enqueue_error(response_queue, e)
                         
                         try:
                             await asyncio.wait_for(wait_ready(), timeout=2.0)
@@ -605,7 +676,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     event_type = event.get("type")
                                     
                                     if event_type == "error":
-                                        logger.error(f"TTS错误: {event}")
+                                        _enqueue_error(response_queue, event)
                                     elif event_type == "response.audio.delta":
                                         try:
                                             audio_bytes = base64.b64decode(event.get("delta", ""))
@@ -686,10 +757,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         audio_api_key: API密钥
         voice_id: 音色ID
     """
+    import re
     import dashscope
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
     
     dashscope.api_key = audio_api_key
+    
+    _RE_KANA = re.compile(r'[\u3040-\u309F\u30A0-\u30FF]')
+    MIN_BUFFER_CHARS = 6
     
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
@@ -709,7 +784,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" not in message:
-                logger.error(f"TTS Error: {message}")
+                _enqueue_error(self.response_queue, message)
             
         def on_close(self): 
             pass
@@ -724,7 +799,39 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     callback = Callback(response_queue)
     current_speech_id = None
     synthesizer = None
-    
+    char_buffer = ""
+    detected_lang = None
+
+    def _create_synthesizer(lang_hint=None):
+        """创建新的 SpeechSynthesizer，可选语言提示"""
+        kwargs = dict(
+            model="cosyvoice-v3-plus",
+            voice=voice_id,
+            speech_rate=1.1,
+            format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
+            callback=callback,
+        )
+        if lang_hint:
+            kwargs["language_hints"] = [lang_hint]
+        callback.construct_start_time = time.time()
+        syn = SpeechSynthesizer(**kwargs)
+        syn.streaming_call("。")
+        return syn
+
+    def _flush_buffer():
+        """检测语言、创建 synthesizer（如果需要）并刷出缓冲区，返回 (synthesizer, detected_lang, char_buffer)"""
+        nonlocal synthesizer, char_buffer, detected_lang
+        if not char_buffer.strip():
+            char_buffer = ""
+            return
+        if _RE_KANA.search(char_buffer):
+            detected_lang = "ja"
+            logger.info("CosyVoice 检测到假名，语言标记为日文")
+        if synthesizer is None:
+            synthesizer = _create_synthesizer(detected_lang)
+        synthesizer.streaming_call(char_buffer)
+        char_buffer = ""
+
     while True:
         # 非阻塞检查队列，优先处理打断
         if request_queue.empty():
@@ -735,8 +842,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
         if sid is None:
             # 停止当前合成 - 告诉TTS没有更多文本了
-            # 注意：streaming_complete() 只是标记输入结束，音频还会继续回传
-            # close() 应该在下次需要新 synthesizer 时再调用，不能立即调用
+            try:
+                _flush_buffer()
+            except Exception as e:
+                logger.warning(f"TTS flush buffer 失败: {e}")
             if synthesizer is not None:
                 try:
                     synthesizer.streaming_complete(complete_timeout_millis=20000)
@@ -749,7 +858,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                         pass
                     synthesizer = None   
             current_speech_id = None
-            continue  # 终止信号处理完毕，继续等待下一个请求
+            char_buffer = ""
+            detected_lang = None
+            continue
 
         if current_speech_id is None:
             current_speech_id = sid
@@ -761,57 +872,52 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     pass
             synthesizer = None
             current_speech_id = sid
+            char_buffer = ""
+            detected_lang = None
             
-        # 需要重建 synthesizer
+        if tts_text is None or not tts_text.strip():
+            time.sleep(0.01)
+            continue
+
+        # 尚未创建 synthesizer 时先缓冲，等够 MIN_BUFFER_CHARS 个字符再一起发送
         if synthesizer is None:
-            current_speech_id = sid
-            
-            # 创建新的 synthesizer
+            char_buffer += tts_text
+            if _RE_KANA.search(tts_text):
+                detected_lang = "ja"
+            if len(char_buffer) < MIN_BUFFER_CHARS:
+                continue
             try:
-                callback.construct_start_time = time.time()
-                synthesizer = SpeechSynthesizer(
-                    model="cosyvoice-v3-plus",
-                    voice=voice_id,
-                    speech_rate=1.1,
-                    format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
-                    callback=callback,
-                )
-                synthesizer.streaming_call("。")
+                if detected_lang == "ja":
+                    logger.info("CosyVoice 检测到假名，语言标记为日文")
+                synthesizer = _create_synthesizer(detected_lang)
+                synthesizer.streaming_call(char_buffer)
+                char_buffer = ""
             except Exception as e:
                 logger.error(f"TTS Init Error: {e}")
                 synthesizer = None
                 current_speech_id = None
+                char_buffer = ""
+                detected_lang = None
                 time.sleep(0.1)
                 continue
-                    
-        if tts_text is None or not tts_text.strip():
-            time.sleep(0.01)
-            continue
-            
-        try:
-            synthesizer.streaming_call(tts_text)
-        except Exception:
-            if synthesizer is not None:
-                try:
-                    synthesizer.close()
-                except Exception:
-                    pass
-                synthesizer = None
-
+        else:
             try:
-                callback.construct_start_time = time.time()
-                synthesizer = SpeechSynthesizer(
-                    model="cosyvoice-v3-plus",
-                    voice=voice_id,
-                    speech_rate=1.1,
-                    format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
-                    callback=callback,
-                )
                 synthesizer.streaming_call(tts_text)
-            except Exception as reconnect_error:
-                logger.error(f"TTS Reconnect Error: {reconnect_error}")
-                synthesizer = None
-                current_speech_id = None
+            except Exception:
+                if synthesizer is not None:
+                    try:
+                        synthesizer.close()
+                    except Exception:
+                        pass
+                    synthesizer = None
+
+                try:
+                    synthesizer = _create_synthesizer(detected_lang)
+                    synthesizer.streaming_call(tts_text)
+                except Exception as reconnect_error:
+                    logger.error(f"TTS Reconnect Error: {reconnect_error}")
+                    synthesizer = None
+                    current_speech_id = None
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -955,9 +1061,9 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                                             logger.error(f"处理音频数据时出错: {e}")
                                         else:
                                             error_text = await resp.text()
-                                            logger.error(f"CogTTS API错误 ({resp.status}): {error_text}")
+                                            _enqueue_error(response_queue, f"CogTTS API错误 ({resp.status}): {error_text}")
                             except Exception as e:
-                                logger.error(f"CogTTS合成失败: {e}")
+                                _enqueue_error(response_queue, f"CogTTS合成失败: {e}")
                     
                     # 清空缓冲区
                     text_buffer = []
@@ -968,7 +1074,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     text_buffer.append(tts_text)
         
         except Exception as e:
-            logger.error(f"CogTTS Worker错误: {e}")
+            _enqueue_error(response_queue, f"CogTTS Worker错误: {e}")
     
     # 运行异步worker
     try:
@@ -977,44 +1083,73 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         logger.error(f"CogTTS Worker启动失败: {e}")
 
 
+def _gemini_tts_httpx_call(http_client, url, text, voice_id, timeout_s=20):
+    """
+    Gemini TTS 直连：httpx POST → 解码 base64 音频 → PCM int16 bytes.
+    比 google-genai SDK 更快（省去 AFC 协商和 SDK 开销），
+    且使用独立连接池，不与 LLM chat 竞争同一 httpx 实例。
+    """
+    import base64
+    wrapped = f'Say the text with a proper tone, don\'t omit or add any words:\n"{text}"'
+    payload = {
+        "contents": [{"parts": [{"text": wrapped}]}],
+        "generationConfig": {
+            "response_modalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice_id}
+                }
+            }
+        }
+    }
+    r = http_client.post(url, json=payload, timeout=timeout_s)
+    r.raise_for_status()
+    data = r.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        return None
+    parts = candidates[0].get("content", {}).get("parts", [])
+    if not parts:
+        return None
+    inline = parts[0].get("inlineData", {})
+    audio_b64 = inline.get("data")
+    if not audio_b64:
+        return None
+    return base64.b64decode(audio_b64)
+
+
 def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     Gemini TTS worker（用于默认音色）
-    使用 Google GenAI SDK 的 TTS 模型（gemini-2.5-flash-preview-tts）
-    注意：Gemini TTS 不支持流式输入也不支持流式输出
-    因此需要累积文本后一次性发送，并一次性接收完整音频
-    
+    使用 httpx 直连 Gemini REST API（绕过 google-genai SDK 以减少 AFC 开销）
+    独立连接池 + 连接预热 + 超时重试
+
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
-        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
-        audio_api_key: API密钥（Gemini API Key）
-        voice_id: 音色ID，默认使用"Leda"（支持多种预置音色）
+        request_queue: 线程队列，接收 (speech_id, text) 元组
+        response_queue: 线程队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: Gemini API Key
+        voice_id: 音色 ID，默认 "Leda"
     """
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError:
-        logger.error("❌ 无法导入 google-genai 库，Gemini TTS 不可用")
-        response_queue.put(("__ready__", False))
-        # 模仿 dummy_tts：持续清空队列但不生成音频
-        while True:
-            try:
-                sid, _ = request_queue.get()
-                if sid is None:
-                    continue
-            except Exception:
-                break
-        return
-    
-    # 使用默认音色 "Leda"
+    import httpx
+
     if not voice_id:
         voice_id = "Leda"
-    
-    # 初始化 Gemini 客户端
+
+    MODEL = "gemini-2.5-flash-preview-tts"
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{MODEL}:generateContent?key={audio_api_key}"
+    )
+    TTS_TIMEOUT = 12   # 单次请求超时（>12s 大概率是慢实例，及时放弃换下一个）
+    MAX_RETRIES = 3    # 最多重试次数
+
     try:
-        client = genai.Client(api_key=audio_api_key)
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(TTS_TIMEOUT + 2, connect=10),
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+        )
     except Exception as e:
-        logger.error(f"❌ Gemini 客户端初始化失败: {e}")
+        logger.error(f"❌ Gemini TTS httpx 客户端初始化失败: {e}")
         response_queue.put(("__ready__", False))
         while True:
             try:
@@ -1024,76 +1159,80 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             except Exception:
                 break
         return
-    
-    # Gemini TTS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
-    logger.info("Gemini TTS 已就绪，发送就绪信号")
+
+    # TLS 连接预热：只做 HTTPS 握手，不消耗 TTS 配额
+    try:
+        logger.info("Gemini TTS TLS 预热中...")
+        http_client.get(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{MODEL}",
+            params={"key": audio_api_key},
+            timeout=10,
+        )
+        logger.info("Gemini TTS TLS 预热完成")
+    except Exception as e:
+        logger.warning(f"Gemini TTS TLS 预热失败（不影响后续使用）: {e}")
+
+    logger.info(f"Gemini TTS 已就绪，发送就绪信号 (response_queue id={id(response_queue):#x})")
     response_queue.put(("__ready__", True))
-    
+
     current_speech_id = None
-    text_buffer = []  # 累积文本缓冲区
-    
+    text_buffer = []
+
     while True:
         try:
             sid, tts_text = request_queue.get()
         except Exception:
             break
-        
-        # 新的语音ID，清空缓冲区并重新开始
+
         if current_speech_id != sid and sid is not None:
             current_speech_id = sid
             text_buffer = []
-        
+
         if sid is None:
-            # 收到终止信号，合成累积的文本
             if text_buffer and current_speech_id is not None:
                 full_text = "".join(text_buffer)
                 if full_text.strip():
-                    try:
-                        # 使用 Gemini TTS API 进行合成
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash-preview-tts",
-                            contents=full_text,
-                            config=types.GenerateContentConfig(
-                                response_modalities=["AUDIO"],
-                                speech_config=types.SpeechConfig(
-                                    voice_config=types.VoiceConfig(
-                                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                            voice_name=voice_id,
-                                        )
-                                    )
-                                ),
+                    logger.info(f"Gemini TTS 开始合成: {len(full_text)} chars, voice={voice_id}")
+                    audio_data = None
+                    for attempt in range(1, MAX_RETRIES + 1):
+                        t0 = time.time()
+                        try:
+                            audio_data = _gemini_tts_httpx_call(
+                                http_client, url, full_text, voice_id,
+                                timeout_s=TTS_TIMEOUT,
                             )
-                        )
-                        
-                        # 提取音频数据
-                        if (response.candidates and 
-                            response.candidates[0].content and 
-                            response.candidates[0].content.parts):
-                            audio_data = response.candidates[0].content.parts[0].inline_data.data
-                            
+                            dt = time.time() - t0
                             if audio_data:
-                                # Gemini TTS 返回 PCM 16-bit @ 24000Hz
-                                audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-                                
-                                # 使用 soxr 进行高质量重采样 24000Hz -> 48000Hz
-                                resampled = soxr.resample(audio_array, 24000, 48000, quality='HQ')
-                                
-                                # 转回 int16 格式
-                                resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
-                                response_queue.put(resampled_int16.tobytes())
-                                logger.debug(f"Gemini TTS 合成完成，音频长度: {len(resampled_int16)} 采样点")
-                        else:
-                            logger.warning("Gemini TTS 返回空响应")
-                            
-                    except Exception as e:
-                        logger.error(f"Gemini TTS 合成失败: {e}")
-            
-            # 清空缓冲区
+                                logger.info(f"Gemini TTS API 返回: {len(audio_data)}B, {dt:.1f}s (attempt {attempt})")
+                            break
+                        except Exception as e:
+                            dt = time.time() - t0
+                            logger.warning(f"Gemini TTS attempt {attempt}/{MAX_RETRIES} 失败 ({dt:.1f}s): {e}")
+                            if attempt == MAX_RETRIES:
+                                _enqueue_error(response_queue, f"Gemini TTS失败: {e}")
+
+                    if audio_data:
+                        audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                        resampled = soxr.resample(audio_array, 24000, 48000, quality='HQ')
+                        resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
+                        audio_bytes = resampled_int16.tobytes()
+                        response_queue.put(audio_bytes)
+                        logger.info(
+                            f"Gemini TTS 合成完成: {len(resampled_int16)} samples, "
+                            f"{len(audio_bytes)}B → queue(id={id(response_queue):#x}, qsize≈{response_queue.qsize()})"
+                        )
+                    else:
+                        logger.warning("Gemini TTS 所有尝试均未返回音频数据")
+                else:
+                    logger.debug("Gemini TTS 跳过: 累积文本为空白")
+            else:
+                logger.debug(f"Gemini TTS flush 无操作: buffer_len={len(text_buffer)}, speech_id={current_speech_id}")
+
             text_buffer = []
             current_speech_id = None
             continue
-        
-        # 累积文本到缓冲区（不立即发送）
+
         if tts_text and tts_text.strip():
             text_buffer.append(tts_text)
 
@@ -1181,7 +1320,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                             response_queue.put(resampled_bytes)
                                             
                             except Exception as e:
-                                logger.error(f"OpenAI TTS 合成失败: {e}")
+                                _enqueue_error(response_queue, f"OpenAI TTS 合成失败: {e}")
                     
                     # 清空缓冲区
                     text_buffer = []
@@ -1193,7 +1332,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     text_buffer.append(tts_text)
         
         except Exception as e:
-            logger.error(f"OpenAI TTS Worker错误: {e}")
+            _enqueue_error(response_queue, f"OpenAI TTS Worker错误: {e}")
     
     # 运行异步worker
     try:
@@ -1235,9 +1374,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     WS_URL = f'{ws_base}/api/v3/tts/stream-input'
 
+    # 剥离 gsv: 前缀（角色系统用于标识 GPT-SoVITS voice_id 的路由前缀）
     # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
     extra_params = {}
     raw_voice = voice_id.strip() if voice_id else ""
+    if raw_voice.startswith(GSV_VOICE_PREFIX):
+        raw_voice = raw_voice[len(GSV_VOICE_PREFIX):].strip()
     if '|' in raw_voice:
         parts = raw_voice.split('|', 1)
         v3_voice_id = parts[0].strip() or "_default"
@@ -1316,7 +1458,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                             elif msg_type == 'done':
                                 logger.debug("[GPT-SoVITS v3] 会话完成")
                             elif msg_type == 'error':
-                                logger.error(f"[GPT-SoVITS v3] 服务端错误: {msg.get('message', '')}")
+                                error_msg = str(msg.get('message', ''))
+                                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 服务端错误: {error_msg}")
                             elif msg_type == 'flushed':
                                 logger.debug("[GPT-SoVITS v3] flush 完成")
                         except json.JSONDecodeError:
@@ -1326,7 +1469,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"[GPT-SoVITS v3] 接收循环异常: {e}")
+                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 接收循环异常: {e}")
 
         async def close_session(ws_conn, recv_task, send_end=True):
             """关闭当前 WS 会话"""
@@ -1443,7 +1586,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         current_speech_id = None
 
         except Exception as e:
-            logger.error(f"[GPT-SoVITS v3] Worker 错误: {e}")
+            _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {e}")
         finally:
             # 清理
             if _ws_is_open(ws):
@@ -1610,7 +1753,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"接收循环异常: {e}")
+                _enqueue_error(response_queue, f"接收循环异常: {e}")
 
         async def send_end_signal(ws_conn):
             """发送结束信号（文本已在主循环中实时发送，此处只需发送 end）"""
@@ -1618,7 +1761,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 await ws_conn.send(json.dumps({"event": "end"}))
                 logger.debug("发送结束信号")
             except Exception as e:
-                logger.error(f"发送结束信号失败: {e}")
+                _enqueue_error(response_queue, f"发送结束信号失败: {e}")
 
         async def create_connection():
             """创建新连接并发送配置"""
@@ -1705,7 +1848,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     await ws.send(json.dumps({"text": tts_text}))
                     logger.debug(f"发送合成片段: {tts_text}")
                 except Exception as e:
-                    logger.error(f"发送失败: {e}")
+                    _enqueue_error(response_queue, f"发送失败: {e}")
                     ws = None
 
         # 清理

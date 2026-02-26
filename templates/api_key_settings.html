@@ -189,6 +189,7 @@
                                         • <span data-i18n="api.siliconAssist">硅基流动：性价比高</span><br>
                                         • <span data-i18n="api.openaiAssist">OpenAI：记忆管理能力强</span><br>
                                         • <span data-i18n="api.geminiAssist">Gemini：智能和性价比极高，但国内版不支持</span><br>
+                                        • <span data-i18n="api.kimiAssist">Kimi：国内可用，支持长上下文和视觉</span><br>
                                         <strong data-i18n="api.assistApiNote">注意：只有阿里支持自定义语音功能</strong>
                                     </div>
                                 </div>
@@ -243,6 +244,14 @@
                                     Gemini</span><em data-i18n="api.assistApiKeyHint"
                                     data-i18n-params='{"providerKey":"gemini"}'>（仅当辅助API为Gemini时需要填写）</em></label>
                             <input type="text" id="assistApiKeyInputGemini"
+                                data-i18n-placeholder="api.assistApiKeyPlaceholder"
+                                placeholder="Optional, defaults to Core API Key" value="" style="max-width: 600px;">
+                        </div>
+                        <div class="field-row">
+                            <label for="assistApiKeyInputKimi"><span data-i18n="api.assistApiKeyKimi">辅助API Key -
+                                    Kimi</span><em data-i18n="api.assistApiKeyHint"
+                                    data-i18n-params='{"providerKey":"kimi"}'>（仅当辅助API为Kimi时需要填写）</em></label>
+                            <input type="text" id="assistApiKeyInputKimi"
                                 data-i18n-placeholder="api.assistApiKeyPlaceholder"
                                 placeholder="Optional, defaults to Core API Key" value="" style="max-width: 600px;">
                         </div>
@@ -625,22 +634,21 @@
                                                 </div>
 
                                                 <div class="field-row">
-                                                    <label for="gptsovitsVoiceId">
-                                                        <span data-i18n="api.gptsovitsVoiceId">声音配置</span>
-                                                        <em style="font-weight: normal; color: #888;"
-                                                            data-i18n="api.gptsovitsVoiceIdHint">（从 GPT-SoVITS v3
-                                                            获取可用配置）</em>
-                                                    </label>
-                                                    <div
-                                                        style="display: flex; gap: 8px; align-items: center; max-width: 600px;">
-                                                        <select id="gptsovitsVoiceId"
-                                                            style="flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                            <option value="" data-i18n="api.gptsovitsVoiceIdEmpty">--
-                                                                请先获取语音列表 --</option>
-                                                        </select>
+                                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                                                        <label for="gptsovitsVoiceId" style="margin-bottom: 0;">
+                                                            <span data-i18n="api.gptsovitsVoiceId">默认声音配置</span>
+                                                            <em style="font-weight: normal; color: #888;"
+                                                                data-i18n="api.gptsovitsVoiceIdHint">（角色管理中设置的 Voice ID 会覆盖此默认配置）</em>
+                                                        </label>
                                                         <button type="button" onclick="fetchGptSovitsVoices()"
-                                                            style="padding: 10px 16px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; white-space: nowrap;"
-                                                            data-i18n="api.gptsovitsRefreshVoices">获取列表</button>
+                                                            class="gsv-refresh-btn"
+                                                            data-i18n="api.gptsovitsRefreshVoices">刷新列表</button>
+                                                    </div>
+                                                    <!-- 隐藏 input 存储选中的 voice_id -->
+                                                    <input type="hidden" id="gptsovitsVoiceId" value="">
+                                                    <!-- 可滚动的声音卡片网格 -->
+                                                    <div id="gsv-voices-grid" class="gsv-voices-grid" role="radiogroup" aria-label="GPT-SoVITS voice list">
+                                                        <div class="gsv-voices-empty" data-i18n="api.gptsovitsVoiceIdEmpty">-- 请先刷新获取语音列表 --</div>
                                                     </div>
                                                 </div>
 

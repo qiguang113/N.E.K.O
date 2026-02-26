@@ -7,7 +7,8 @@ import sys
 import os
 import json
 import shutil
-import logging
+import threading
+from datetime import date
 from copy import deepcopy
 from pathlib import Path
 
@@ -22,15 +23,19 @@ from utils.api_config_loader import (
     get_assist_api_profiles,
     get_assist_api_key_fields,
 )
+from utils.custom_tts_adapter import check_custom_tts_voice_allowed
+from utils.logger_config import get_module_logger
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 class ConfigManager:
     """配置文件管理器"""
+    _agent_quota_lock = threading.Lock()
+    _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
     
     def __init__(self, app_name=None):
         """
@@ -603,46 +608,53 @@ class ConfigManager:
         return False
 
     def validate_voice_id(self, voice_id):
-        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
+        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效。
+        
+        校验覆盖四类 voice_id：
+          1. "cosyvoice-v2..." → 旧版格式，始终无效
+          2. "gsv:xxx" → 委托 check_custom_tts_voice_allowed (custom_tts_adapter)
+             判定，由适配器根据 tts_custom 配置决定有效性
+          3. 普通 ID → 在 voice_storage (CosyVoice 云端克隆音色) 中查找
+          4. 免费预设音色 → 这里只做静态白名单放行；运行时由 core.py
+             _should_block_free_preset_voice 根据线路 (lanlan.tech / lanlan.app)
+             动态决定是否实际启用（lanlan.app 海外节点不支持预设音色）
+        """
         if not voice_id:
             return True
 
-        # 自动忽略以 "cosyvoice-v2" 开头的旧版音色ID
         if voice_id.startswith("cosyvoice-v2"):
             return False
+
+        custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
+        if custom_tts_allowed is not None:
+            return custom_tts_allowed
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
             return True
-        
-        # 免费版 + lanlan.tech 时，也接受 free_voices 中的 voice_id
-        core_config = self.get_core_config()
-        if core_config.get('IS_FREE_VERSION'):
-            core_url = core_config.get('CORE_URL', '')
-            openrouter_url = core_config.get('OPENROUTER_URL', '')
-            if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
-                from utils.api_config_loader import get_free_voices
-                free_voices = get_free_voices()
-                if voice_id in free_voices.values():
-                    return True
-        
+
+        # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if voice_id in free_voices.values():
+            return True
+
         return False
 
     def cleanup_invalid_voice_ids(self):
-        """清理 characters.json 中无效的 voice_id"""
+        """清理 characters.json 中无效的 voice_id。
+        
+        通过 validate_voice_id 统一判定有效性，不含 provider 专属逻辑。
+        注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
+        实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
+        """
         character_data = self.load_characters()
-        voices = self.get_voices_for_current_api()
-        
-        # 免费预设音色也是有效的，不应被清理
-        from utils.api_config_loader import get_free_voices
-        free_voice_ids = set(get_free_voices().values())
-        
         cleaned_count = 0
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
+            if voice_id and not self.validate_voice_id(voice_id):
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
@@ -719,45 +731,31 @@ class ConfigManager:
     
     def _check_non_mainland(self) -> bool:
         """Check if user is non-mainland China (cached, lazy evaluation)."""
-        # Return cached result if available
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
         
         try:
-            # Skip if shared_state not loaded yet (avoid circular import during startup)
-            if 'main_routers.shared_state' not in sys.modules:
-                return False  # Don't cache, retry next time
-            
             from main_routers.shared_state import get_steamworks
             steamworks = get_steamworks()
             
             if steamworks is None:
-                # Steam not initialized yet, don't cache, retry next time
-                return False
+                return False  # Don't cache, retry next time
             
             ip_country = steamworks.Utils.GetIPCountry()
             if isinstance(ip_country, bytes):
                 ip_country = ip_country.decode('utf-8')
             
-            # 醒目日志
-            print("=" * 60, file=sys.stderr)
-            print(f"[GeoIP DEBUG] Steam GetIPCountry() returned: '{ip_country}'", file=sys.stderr)
-            print(f"[GeoIP DEBUG] Country code (upper): '{ip_country.upper() if ip_country else 'EMPTY'}'", file=sys.stderr)
-            
-            # CN = mainland (False), else = non-mainland (True)
-            # If ip_country is empty, default to mainland (False)
             result = (ip_country.upper() != 'CN') if ip_country else False
             
-            print(f"[GeoIP DEBUG] Is non-mainland: {result}", file=sys.stderr)
-            print("=" * 60, file=sys.stderr)
+            print(f"[GeoIP] _check_non_mainland: country={ip_country}, non_mainland={result}", file=sys.stderr)
             
-            # Cache only when we get a definitive answer
             ConfigManager._region_cache = result
             return result
             
+        except ImportError:
+            return False  # Don't cache, module not available yet
         except Exception as e:
-            # On any error, don't cache and default to mainland (no replacement)
-            print(f"[GeoIP DEBUG] Exception: {e}", file=sys.stderr)
+            print(f"[GeoIP] _check_non_mainland exception: {e}", file=sys.stderr)
             return False
     
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
@@ -880,6 +878,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_KIMI'] = core_cfg.get('assistApiKeyKimi', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -913,9 +912,10 @@ class ConfigManager:
 
         if assist_profile:
             config.update(assist_profile)
-        # agent api 默认跟随辅助 API 的视觉模型
+        # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
+        config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app') # TODO: 先放这里
 
         key_field = assist_api_key_fields.get(assist_api_value)
         derived_key = ''
@@ -930,19 +930,21 @@ class ConfigManager:
         if not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
 
-        # Agent API 配置处理（默认跟随 assist vision，可单独覆盖）
-        if core_cfg.get('agentModelUrl') is not None:
-            config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
-        if core_cfg.get('agentModelId') is not None:
-            config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
-        if core_cfg.get('agentModelApiKey') is not None:
-            config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '') or config.get('AGENT_MODEL_API_KEY', '')
+        # Agent API Key 回退：未显式配置时跟随辅助 API Key
         if not config.get('AGENT_MODEL_API_KEY'):
             config['AGENT_MODEL_API_KEY'] = derived_key if derived_key else config.get('CORE_API_KEY', '')
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
+        try:
+            config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 400))
+            if config['TEXT_GUARD_MAX_LENGTH'] <= 0:
+                config['TEXT_GUARD_MAX_LENGTH'] = 400
+        except (TypeError, ValueError):
+            config['TEXT_GUARD_MAX_LENGTH'] = 400
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
@@ -985,6 +987,14 @@ class ConfigManager:
                 config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
             if core_cfg.get('visionModelId') is not None:
                 config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
+            
+            # Agent（智能体）模型自定义配置映射
+            if core_cfg.get('agentModelApiKey') is not None:
+                config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '') or config.get('AGENT_MODEL_API_KEY', '')
+            if core_cfg.get('agentModelUrl') is not None:
+                config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
+            if core_cfg.get('agentModelId') is not None:
+                config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
             
             # Omni/Realtime（全模态/实时）模型自定义配置映射
             if core_cfg.get('omniModelApiKey') is not None:
@@ -1163,22 +1173,105 @@ class ConfigManager:
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """
         Agent 模式门槛检查：
-        - free 版本禁止 Agent
         - 必须具备可用的 AGENT_MODEL(model/url/api_key)
+        - free 版本允许使用但由前端提示风险
         """
         reasons = []
         core_config = self.get_core_config()
-        if core_config.get('IS_FREE_VERSION'):
-            reasons.append("free API 不支持 Agent 模式")
+        is_free = bool(core_config.get('IS_FREE_VERSION'))
         agent_api = self.get_model_api_config('agent')
         if not (agent_api.get('model') or '').strip():
             reasons.append("Agent 模型未配置")
         if not (agent_api.get('base_url') or '').strip():
             reasons.append("Agent API URL 未配置")
         api_key = (agent_api.get('api_key') or '').strip()
-        if not api_key or api_key == 'free-access':
+        if not api_key:
+            reasons.append("Agent API Key 未配置或不可用")
+        elif api_key == 'free-access' and not is_free:
             reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
+
+    def is_free_version(self) -> bool:
+        return bool(self.get_core_config().get('IS_FREE_VERSION'))
+
+    def _get_agent_quota_path(self) -> Path:
+        """本地 Agent 试用配额计数文件路径。"""
+        return self.config_dir / "agent_quota.json"
+
+    def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+
+        Returns:
+            (ok, info)
+            info:
+              - limited: bool
+              - date: YYYY-MM-DD
+              - used: int
+              - limit: int | None
+              - remaining: int | None
+              - source: str
+        """
+        if units <= 0:
+            units = 1
+
+        is_free = self.is_free_version()
+        today = date.today().isoformat()
+        limit = int(self._free_agent_daily_limit)
+
+        if not is_free:
+            return True, {
+                "limited": False,
+                "date": today,
+                "used": 0,
+                "limit": None,
+                "remaining": None,
+                "source": source or "",
+            }
+
+        self.ensure_config_directory()
+        quota_path = self._get_agent_quota_path()
+
+        with ConfigManager._agent_quota_lock:
+            data = {"date": today, "used": 0}
+            try:
+                if quota_path.exists():
+                    with open(quota_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        loaded_date = str(loaded.get("date") or today)
+                        loaded_used = int(loaded.get("used", 0) or 0)
+                        if loaded_date == today:
+                            data = {"date": today, "used": max(0, loaded_used)}
+            except Exception:
+                data = {"date": today, "used": 0}
+
+            used = int(data.get("used", 0))
+            if used + units > limit:
+                return False, {
+                    "limited": True,
+                    "date": today,
+                    "used": used,
+                    "limit": limit,
+                    "remaining": max(0, limit - used),
+                    "source": source or "",
+                }
+
+            used += units
+            data = {"date": today, "used": used}
+            try:
+                with open(quota_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning("保存 Agent 配额计数失败: %s", e)
+
+            return True, {
+                "limited": True,
+                "date": today,
+                "used": used,
+                "limit": limit,
+                "remaining": max(0, limit - used),
+                "source": source or "",
+            }
 
     def load_json_config(self, filename, default_value=None):
         """

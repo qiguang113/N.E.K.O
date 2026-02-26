@@ -347,6 +347,7 @@ async function loadCurrentApiKey() {
             setInputValue('assistApiKeyInputStep', data.assistApiKeyStep, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputSilicon', data.assistApiKeySilicon, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputGemini', data.assistApiKeyGemini, assistApiKeyPlaceholder);
+            setInputValue('assistApiKeyInputKimi', data.assistApiKeyKimi, assistApiKeyPlaceholder);
 
             // 加载用户自定义API配置
             setInputValue('conversationModelUrl', data.conversationModelUrl);
@@ -445,21 +446,10 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
         const apiUrlEl = document.getElementById('gptsovitsApiUrl');
         if (apiUrlEl && urlToLoad) apiUrlEl.value = urlToLoad;
 
+        // 设置隐藏 input 的值（卡片高亮会在 fetchGptSovitsVoices 完成后自动匹配）
         if (voiceIdToLoad) {
-            const el = document.getElementById('gptsovitsVoiceId');
-            if (el) {
-                // select 元素：先尝试选中已有选项，若不存在则添加一个临时选项
-                const existingOpt = el.querySelector(`option[value="${voiceIdToLoad}"]`);
-                if (existingOpt) {
-                    el.value = voiceIdToLoad;
-                } else {
-                    const opt = document.createElement('option');
-                    opt.value = voiceIdToLoad;
-                    opt.textContent = voiceIdToLoad;
-                    el.appendChild(opt);
-                    el.value = voiceIdToLoad;
-                }
-            }
+            const hiddenInput = document.getElementById('gptsovitsVoiceId');
+            if (hiddenInput) hiddenInput.value = voiceIdToLoad;
         }
 
         // 自动获取语音列表（如果有 URL）
@@ -471,16 +461,39 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
 }
 
 /**
- * 从 GPT-SoVITS v3 API 获取可用语音配置列表并填充下拉框
+ * 选中一个 GPT-SoVITS voice 卡片
+ * @param {string} voiceId - 要选中的 voice_id
+ */
+function selectGsvVoice(voiceId) {
+    const hiddenInput = document.getElementById('gptsovitsVoiceId');
+    if (hiddenInput) hiddenInput.value = voiceId;
+
+    // 更新卡片高亮
+    const grid = document.getElementById('gsv-voices-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.gsv-voice-card').forEach(card => {
+        const isSelected = card.dataset.voiceId === voiceId;
+        card.classList.toggle('selected', isSelected);
+        card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+        card.tabIndex = isSelected ? 0 : -1;
+    });
+}
+
+/**
+ * 从 GPT-SoVITS v3 API 获取可用语音配置列表并渲染为卡片网格
  * @param {boolean} silent - 静默模式，不显示错误提示
  */
 async function fetchGptSovitsVoices(silent = false) {
     const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9881';
-    const select = document.getElementById('gptsovitsVoiceId');
-    if (!select) return;
+    const grid = document.getElementById('gsv-voices-grid');
+    const hiddenInput = document.getElementById('gptsovitsVoiceId');
+    if (!grid) return;
 
     // 记住当前选中的值
-    const currentValue = select.value;
+    const currentValue = hiddenInput ? hiddenInput.value : '';
+
+    // 显示加载状态
+    grid.innerHTML = '<div class="gsv-voices-loading">⏳ ' + _escHtml(window.t ? window.t('api.loadingConfig') : '正在加载...') + '</div>';
 
     try {
         const resp = await fetch('/api/config/gptsovits/list_voices', {
@@ -491,42 +504,98 @@ async function fetchGptSovitsVoices(silent = false) {
         const result = await resp.json();
 
         if (result.success && Array.isArray(result.voices)) {
-            // 清空现有选项
-            select.innerHTML = '';
+            grid.innerHTML = '';
 
             if (result.voices.length === 0) {
-                const emptyOpt = document.createElement('option');
-                emptyOpt.value = '';
-                emptyOpt.textContent = window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --';
-                select.appendChild(emptyOpt);
+                grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --') + '</div>';
             } else {
+                let hasSelectedCard = false;
                 result.voices.forEach(v => {
-                    const opt = document.createElement('option');
-                    opt.value = v.id;
-                    opt.textContent = v.name ? `${v.name} (${v.id})` : v.id;
-                    if (v.description) opt.title = v.description;
-                    select.appendChild(opt);
-                });
-            }
+                    const card = document.createElement('div');
+                    card.className = 'gsv-voice-card';
+                    card.dataset.voiceId = v.id;
+                    const isSelected = v.id === currentValue;
+                    if (isSelected) card.classList.add('selected');
+                    if (isSelected) hasSelectedCard = true;
+                    card.setAttribute('role', 'radio');
+                    card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+                    card.tabIndex = isSelected ? 0 : -1;
 
-            // 恢复之前选中的值
-            if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
-                select.value = currentValue;
+                    // 卡片内容
+                    let html = '';
+                    html += '<div class="gsv-card-name">' + _escHtml(v.name || v.id) + '</div>';
+                    if (v.name && v.name !== v.id) {
+                        html += '<div class="gsv-card-id">' + _escHtml(v.id) + '</div>';
+                    }
+                    if (v.version) {
+                        html += '<div class="gsv-card-version">' + _escHtml(v.version) + '</div>';
+                    }
+                    if (v.description) {
+                        html += '<div class="gsv-card-desc" title="' + _escAttr(v.description) + '">' + _escHtml(v.description) + '</div>';
+                    }
+                    card.innerHTML = html;
+
+                    card.addEventListener('click', () => selectGsvVoice(v.id));
+                    card.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectGsvVoice(v.id);
+                            return;
+                        }
+
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            const cards = Array.from(grid.querySelectorAll('.gsv-voice-card'));
+                            const currentIndex = cards.indexOf(card);
+                            if (currentIndex === -1 || cards.length === 0) return;
+
+                            const step = (event.key === 'ArrowRight' || event.key === 'ArrowDown') ? 1 : -1;
+                            const nextIndex = (currentIndex + step + cards.length) % cards.length;
+                            const nextCard = cards[nextIndex];
+                            if (nextCard) {
+                                selectGsvVoice(nextCard.dataset.voiceId || '');
+                                nextCard.focus();
+                            }
+                        }
+                    });
+                    grid.appendChild(card);
+                });
+
+                // 当没有任何已选项时，保证网格中至少一个卡片可被键盘 Tab 聚焦
+                if (!hasSelectedCard) {
+                    const firstCard = grid.querySelector('.gsv-voice-card');
+                    if (firstCard) firstCard.tabIndex = 0;
+                }
             }
 
             if (!silent) {
                 showStatus(window.t ? window.t('api.gptsovitsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个语音配置`, 'success');
             }
         } else {
+            grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败')) + '</div>';
             if (!silent) {
                 showStatus(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败'), 'error');
             }
         }
     } catch (e) {
+        grid.innerHTML = '<div class="gsv-voices-empty">❌ ' + _escHtml(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败') + '</div>';
         if (!silent) {
             showStatus(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败: ' + e.message, 'error');
         }
     }
+}
+
+/** HTML escape helper */
+function _escHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = (str == null ? '' : String(str));
+    return d.innerHTML;
+}
+
+/** Attribute escape helper */
+function _escAttr(str) {
+    const s = (str == null ? '' : String(str));
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**
@@ -726,6 +795,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const assistApiKeyStep = document.getElementById('assistApiKeyInputStep') ? document.getElementById('assistApiKeyInputStep').value.trim() : '';
     const assistApiKeySilicon = document.getElementById('assistApiKeyInputSilicon') ? document.getElementById('assistApiKeyInputSilicon').value.trim() : '';
     const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
+    const assistApiKeyKimi = document.getElementById('assistApiKeyInputKimi') ? document.getElementById('assistApiKeyInputKimi').value.trim() : '';
 
     // 获取用户自定义API配置
     const conversationModelUrl = document.getElementById('conversationModelUrl') ? document.getElementById('conversationModelUrl').value.trim() : '';
@@ -807,7 +877,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 已有API Key，显示警告弹窗
         pendingApiKey = {
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
             conversationModelUrl, conversationModelId, conversationModelApiKey,
             summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -823,7 +893,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 没有现有API Key，直接保存
         await saveApiKey({
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
             conversationModelUrl, conversationModelId, conversationModelApiKey,
             summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -837,7 +907,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -866,6 +936,7 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 assistApiKeyStep: assistApiKeyStep || undefined,
                 assistApiKeySilicon: assistApiKeySilicon || undefined,
                 assistApiKeyGemini: assistApiKeyGemini || undefined,
+                assistApiKeyKimi: assistApiKeyKimi || undefined,
                 conversationModelUrl: conversationModelUrl || undefined,
                 conversationModelId: conversationModelId || undefined,
                 conversationModelApiKey: conversationModelApiKey || undefined,
@@ -999,7 +1070,8 @@ function isFreeVersionText(value) {
 function setAssistApiInputsDisabled(disabled) {
     const assistApiKeyInputs = [
         'assistApiKeyInputQwen', 'assistApiKeyInputOpenai', 'assistApiKeyInputGlm',
-        'assistApiKeyInputStep', 'assistApiKeyInputSilicon', 'assistApiKeyInputGemini'
+        'assistApiKeyInputStep', 'assistApiKeyInputSilicon', 'assistApiKeyInputGemini',
+        'assistApiKeyInputKimi'
     ];
     assistApiKeyInputs.forEach(id => {
         const input = document.getElementById(id);
@@ -1079,7 +1151,8 @@ function updateAssistApiRecommendation() {
             'glm': 'assistApiKeyInputGlm',
             'step': 'assistApiKeyInputStep',
             'silicon': 'assistApiKeyInputSilicon',
-            'gemini': 'assistApiKeyInputGemini'
+            'gemini': 'assistApiKeyInputGemini',
+            'kimi': 'assistApiKeyInputKimi'
         };
 
         // 检查辅助API是否有对应的API Key
@@ -1142,6 +1215,7 @@ function updateAssistApiRecommendation() {
             • <span>${window.t ? window.t('api.siliconAssist') : '硅基流动：性价比高'}</span><br>
             • <span>${window.t ? window.t('api.openaiAssist') : 'OpenAI：记忆管理能力强'}</span><br>
             • <span>${window.t ? window.t('api.geminiAssist') : 'Gemini：智能和性价比极高，但国内版不支持'}</span><br>
+            • <span>${window.t ? window.t('api.kimiAssist') : 'Kimi：国内可用，支持长上下文和视觉'}</span><br>
             <strong>${window.t ? window.t('api.assistApiNote') : '注意：只有阿里支持自定义语音功能'}</strong><br>
             <strong>${window.t ? window.t('api.currentSuggestion') : '当前建议：'}</strong>${recommendation}
         `;

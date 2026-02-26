@@ -14,8 +14,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         this._uiWindowHandlers = [];
     }
     if (this._uiWindowHandlers.length > 0) {
-        this._uiWindowHandlers.forEach(({ event, handler }) => {
-            window.removeEventListener(event, handler);
+        this._uiWindowHandlers.forEach(({ event, handler, target, options }) => {
+            const eventTarget = target || window;
+            eventTarget.removeEventListener(event, handler, options);
         });
         this._uiWindowHandlers = [];
     }
@@ -54,6 +55,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
+    buttonsContainer.addEventListener('mouseenter', () => { this._vrmButtonsHovered = true; });
+    buttonsContainer.addEventListener('mouseleave', () => { this._vrmButtonsHovered = false; });
+
     const applyResponsiveFloatingLayout = () => {
         if (this._isInReturnState) {
             buttonsContainer.style.display = 'none';
@@ -77,11 +81,57 @@ VRMManager.prototype.setupFloatingButtons = function () {
             buttonsContainer.style.right = '';
             buttonsContainer.style.left = '';
             buttonsContainer.style.top = '';
-            buttonsContainer.style.display = 'flex';
+            // 桌面端显示由更新循环中的距离判定控制，这里不强制显示
         }
     };
     applyResponsiveFloatingLayout();
-    this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
+    const shouldShowLockIcon = () => {
+        const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+        if (this._isInReturnState) return false;
+        if (isLocked) return true;
+
+        const mouse = this._vrmMousePos;
+        if (!mouse) return false;
+        if (!this._vrmMousePosTs || (Date.now() - this._vrmMousePosTs > 1500)) return false;
+
+        // 锁图标命中使用整块矩形（包含中间透明区域），并向外扩展若干像素增加吸附手感
+        if (this._vrmLockIcon) {
+            const rect = this._vrmLockIcon.getBoundingClientRect();
+            const expandPx = 8;
+            const inExpandedRect =
+                mouse.x >= rect.left - expandPx &&
+                mouse.x <= rect.right + expandPx &&
+                mouse.y >= rect.top - expandPx &&
+                mouse.y <= rect.bottom + expandPx;
+            if (inExpandedRect) return true;
+        }
+
+        const centerX = this._vrmModelCenterX;
+        const centerY = this._vrmModelCenterY;
+        if (!mouse || typeof centerX !== 'number' || typeof centerY !== 'number') return false;
+
+        if (this._vrmMouseInModelRegion) return true;
+
+        const dx = mouse.x - centerX;
+        const dy = mouse.y - centerY;
+        const dist = Math.hypot(dx, dy);
+        const modelHeight = Math.max(0, Number(this._vrmModelScreenHeight) || 0);
+        const threshold = Math.max(90, Math.min(260, modelHeight * 0.55));
+        return dist <= threshold;
+    };
+    this._shouldShowVrmLockIcon = shouldShowLockIcon;
+
+    const updateMousePosition = (e) => {
+        this._vrmMousePos = {
+            x: typeof e.clientX === 'number' ? e.clientX : 0,
+            y: typeof e.clientY === 'number' ? e.clientY : 0
+        };
+        this._vrmMousePosTs = Date.now();
+    };
+    const mouseListenerOptions = { passive: true, capture: true };
+    this._uiWindowHandlers.push({ event: 'mousemove', handler: updateMousePosition, target: window, options: mouseListenerOptions });
+    window.addEventListener('mousemove', updateMousePosition, mouseListenerOptions);
+    this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout, target: window });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
     const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
@@ -245,10 +295,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
             const triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
-            triggerImg.setAttribute('aria-hidden', 'true');
+            triggerImg.className = `vrm-trigger-icon-${config.id}`;
             Object.assign(triggerImg.style, {
                 width: '22px', height: '22px', objectFit: 'contain',
-                pointerEvents: 'none', imageRendering: 'crisp-edges'
+                pointerEvents: 'none', imageRendering: 'crisp-edges',
+                transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
             });
             Object.assign(triggerBtn.style, {
                 width: '24px', height: '24px', borderRadius: '50%',
@@ -301,10 +352,29 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     popup.style.opacity !== '';
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
+                    // 更新被关闭的互斥按钮的图标
+                    const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                        exclusiveData.imgOff.style.opacity = '1';
+                        exclusiveData.imgOn.style.opacity = '0';
+                    }
                 }
                 isToggling = true;
                 this.showPopup(config.id, popup);
+                // 更新图标状态
                 setTimeout(() => {
+                    const newPopupVisible = popup.style.display === 'flex' &&
+                        popup.style.opacity !== '0' &&
+                        popup.style.opacity !== '';
+                    if (imgOff && imgOn) {
+                        if (newPopupVisible) {
+                            imgOff.style.opacity = '0';
+                            imgOn.style.opacity = '1';
+                        } else {
+                            imgOff.style.opacity = '1';
+                            imgOn.style.opacity = '0';
+                        }
+                    }
                     isToggling = false;
                 }, 200);
             });
@@ -413,9 +483,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             this._vrmLockIcon.style.backgroundImage = isLocked
                 ? 'url(/static/icons/locked_icon.png)'
                 : 'url(/static/icons/unlocked_icon.png)';
-            if (!isLocked) {
-                this._vrmLockIcon.style.display = 'block';
-            }
+            this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
         }
     };
 
@@ -500,7 +568,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._vrmLockIcon = lockIcon;
 
     Object.assign(lockIcon.style, {
-        position: 'fixed', zIndex: '99999', width: '44px', height: '44px',
+        position: 'fixed', zIndex: '99999', width: '32px', height: '32px',
         cursor: 'pointer', display: 'none',
         backgroundImage: 'url(/static/icons/unlocked_icon.png)',
         backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center',
@@ -564,7 +632,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             lockIcon.style.transform = `scale(${baseScale})`;
         }, 100);
 
-        lockIcon.style.display = 'block';
+        lockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
 
         // 刷新浮动按钮布局，立即反映新的锁定状态
         applyResponsiveFloatingLayout();
@@ -581,12 +649,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         // 使用响应式布局函数，会检查锁定状态和视口
         applyResponsiveFloatingLayout();
 
-        // 显示锁图标（检查锁定状态，只有在未锁定时才显示）
+        // 锁图标显示由锁定状态和悬停状态共同决定
         if (this._vrmLockIcon) {
-            const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
-            if (!isLocked) {
-                this._vrmLockIcon.style.display = 'block';
-            }
+            this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
         }
     }, 100); // 延迟100ms确保位置已计算
 
@@ -708,9 +773,47 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 screenBottom = Math.max(screenBottom, sy);
             }
 
-            // 现在 screenLeft/Right/Top/Bottom 就是模型在屏幕上 的 2D 边界（与 Live2D bounds 等价）
-            const modelScreenHeight = screenBottom - screenTop;
-            const modelCenterY = (screenTop + screenBottom) / 2;
+            // 对超屏模型使用可见区域边界，避免放大后 UI 锚点被极端投影值拉远
+            const visibleLeft = Math.max(0, Math.min(canvasWidth, screenLeft - canvasRect.left));
+            const visibleRight = Math.max(0, Math.min(canvasWidth, screenRight - canvasRect.left));
+            const visibleTop = Math.max(0, Math.min(canvasHeight, screenTop - canvasRect.top));
+            const visibleBottom = Math.max(0, Math.min(canvasHeight, screenBottom - canvasRect.top));
+
+            const visibleHeight = Math.max(1, visibleBottom - visibleTop);
+
+            // 公开给其它模块时统一使用视口坐标（而非 canvas 局部坐标）
+            const modelScreenHeight = visibleHeight;
+            const modelCenterY = canvasRect.top + (visibleTop + visibleBottom) / 2;
+            const modelCenterX = canvasRect.left + (visibleLeft + visibleRight) / 2;
+            this._vrmModelCenterX = modelCenterX;
+            this._vrmModelCenterY = modelCenterY;
+            this._vrmModelScreenHeight = modelScreenHeight;
+
+            const mouse = this._vrmMousePos;
+            const mouseStale = !this._vrmMousePosTs || (Date.now() - this._vrmMousePosTs > 1500);
+            const mouseDist = (mouse && !mouseStale) ? Math.hypot(mouse.x - modelCenterX, mouse.y - modelCenterY) : Infinity;
+            const baseThreshold = Math.max(90, Math.min(260, modelScreenHeight * 0.55));
+
+            // 鼠标是否在模型可见区域内（带外扩边距，覆盖按钮可能出现的位置）
+            const padX = Math.max(60, (visibleRight - visibleLeft) * 0.3);
+            const padY = Math.max(40, (visibleBottom - visibleTop) * 0.2);
+            const mouseInModelRegion = mouse && !mouseStale &&
+                mouse.x >= canvasRect.left + visibleLeft - padX &&
+                mouse.x <= canvasRect.left + visibleRight + padX &&
+                mouse.y >= canvasRect.top + visibleTop - padY &&
+                mouse.y <= canvasRect.top + visibleBottom + padY;
+
+            this._vrmMouseInModelRegion = !!mouseInModelRegion;
+
+            const showThreshold = baseThreshold;
+            const hideThreshold = baseThreshold * 1.2;
+            if (this._vrmUiNearModel !== true && (mouseDist <= showThreshold || mouseInModelRegion)) {
+                this._vrmUiNearModel = true;
+            } else if (this._vrmUiNearModel !== false && mouseDist >= hideThreshold && !mouseInModelRegion) {
+                this._vrmUiNearModel = false;
+            } else if (typeof this._vrmUiNearModel !== 'boolean') {
+                this._vrmUiNearModel = false;
+            }
 
             // ========== 按钮缩放（与之前相同） ==========
             const visibleCount = getVisibleButtonCount();
@@ -726,8 +829,16 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 const isMobile = window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
+                    // 移动端保持常驻，桌面端使用距离判定
+                    buttonsContainer.style.display = 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
+                    const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+                    const hoveringButtons = this._vrmButtonsHovered === true;
+                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+                        .some((popup) => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenPopup);
+                    buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
 
@@ -736,7 +847,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                     const screenHeight = window.innerHeight;
 
                     // X轴：定位在角色右侧（与 Live2D 相同公式）
-                    const targetX = screenRight * 0.8 + screenLeft * 0.2;
+                    const targetX = canvasRect.left + visibleRight * 0.8 + visibleLeft * 0.2;
 
                     // 使用缩放后的实际工具栏高度
                     const actualToolbarHeight = baseToolbarHeight * scale;
@@ -744,7 +855,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                     // Y轴：工具栏中心偏高于模型中心（VRM 全身模型的包围盒中心在腰部，
                     // 需要上移让按钮更接近胸部位置，与 Live2D 半身模型的视觉效果一致）
-                    const offsetY = modelScreenHeight * 0.1;  // 上移 10% 模型高度
+                    const offsetY = Math.min(modelScreenHeight * 0.1, screenHeight * 0.08);  // 上移量设上限，避免放大后越飘越远
                     const targetY = modelCenterY - actualToolbarHeight / 2 - offsetY;
 
                     // 边界限制：确保不超出当前屏幕（与 Live2D 保持一致，使用 20px 边距）
@@ -766,13 +877,13 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                     // ========== 锁图标位置（与 Live2D 相同公式） ==========
                     if (lockIcon && !this._isInReturnState) {
-                        const lockTargetX = screenRight * 0.7 + screenLeft * 0.3;
-                        const lockTargetY = screenTop * 0.3 + screenBottom * 0.7;
+                        const lockTargetX = canvasRect.left + visibleRight * 0.7 + visibleLeft * 0.3;
+                        const lockTargetY = canvasRect.top + visibleTop * 0.3 + visibleBottom * 0.7;
 
                         lockIcon.style.transformOrigin = 'center center';
                         lockIcon.style.transform = `scale(${scale})`;
 
-                        const baseLockIconSize = 44;
+                        const baseLockIconSize = 32;
                         const actualLockIconSize = baseLockIconSize * scale;
                         const maxLockX = screenWidth - actualLockIconSize;
                         const maxLockY = screenHeight - actualLockIconSize - 20;
@@ -786,7 +897,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                             lockIcon.style.left = `${boundedLockX}px`;
                             lockIcon.style.top = `${boundedLockY}px`;
                         }
-                        lockIcon.style.display = 'block';
+                        lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
                     }
                 }
             }

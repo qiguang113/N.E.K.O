@@ -26,11 +26,11 @@
     window.i18nInitialized = true;
 
     // 支持的语言列表
-    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko'];
+    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-02-04-1';
+    const LOCALE_VERSION = '2026-02-23-1';
 
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
@@ -52,6 +52,7 @@
             if (langCode === 'en') return 'en';
             if (langCode === 'ja') return 'ja';
             if (langCode === 'ko') return 'ko';
+            if (langCode === 'ru') return 'ru';
             if (langCode === 'zh') {
                 // 根据地区/脚本区分简繁（如 zh-TW / zh-HK / zh-Hant）
                 const upper = browserLanguage.toUpperCase();
@@ -666,9 +667,16 @@
             const key = element.getAttribute('data-i18n');
             let params = {};
 
-            if (element.hasAttribute('data-i18n-params')) {
+            // 兼容两种参数属性：
+            // - data-i18n-params: 当前规范
+            // - data-i18n-options: 历史用法（例如创意工坊分页）
+            const paramsAttr = element.hasAttribute('data-i18n-params')
+                ? 'data-i18n-params'
+                : (element.hasAttribute('data-i18n-options') ? 'data-i18n-options' : null);
+
+            if (paramsAttr) {
                 try {
-                    params = JSON.parse(element.getAttribute('data-i18n-params'));
+                    params = JSON.parse(element.getAttribute(paramsAttr));
                 } catch (e) {
                     console.warn(`[i18n] Failed to parse params for ${key}:`, e);
                 }
@@ -847,13 +855,31 @@
      * @returns {string} Translated message
      */
     function translateStatusMessage(message) {
+        // Attempt to parse JSON strings into objects
+        if (typeof message === 'string') {
+            try {
+                const parsed = JSON.parse(message);
+                if (parsed && typeof parsed === 'object') {
+                    message = parsed;
+                }
+            } catch (e) {
+                // Not valid JSON, keep as string
+            }
+        }
+
         // Support structured error objects (future-proofing)
         if (message && typeof message === 'object') {
             if (message.code && typeof message.code === 'string') {
                 // Use error code for translation (preferred method)
                 const translationKey = `errors.${message.code}`;
                 const details = message.details || {};
-                return i18next.t(translationKey, details) || message.message || String(message);
+                const translated = i18next.t(translationKey, details);
+                
+                // If translation succeeds (doesn't return the key), return it
+                if (translated && translated !== translationKey) return translated;
+                
+                // Fallbacks if no translation available
+                return message.message || details.msg || String(message);
             }
             // If object has message property, use it
             if (message.message) {

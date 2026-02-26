@@ -1121,7 +1121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+    await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
     showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
 
     // 先加载模型列表
@@ -1490,11 +1490,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const vrmIdleAnimGroup = document.getElementById('vrm-idle-animation-group');
             if (vrmIdleAnimGroup) vrmIdleAnimGroup.style.display = 'none';
 
-            // 【关键修复】强制重新初始化PIXI
-            // PIXI销毁后可能会移除canvas元素，需要重新创建
+            // 确保 Live2D Canvas 存在（PIXI 被销毁时可能移除）
             const live2dCanvas = document.getElementById('live2d-canvas');
             if (!live2dCanvas) {
-                // canvas被销毁了，需要重新创建
                 const newCanvas = document.createElement('canvas');
                 newCanvas.id = 'live2d-canvas';
                 const container = document.getElementById('live2d-container');
@@ -1503,13 +1501,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            // 无论如何都重新初始化PIXI，确保干净的状态
+            // 幂等初始化：仅在未就绪时初始化，避免重复重建导致首帧抖动
             if (window.live2dManager) {
-                // 强制重置状态
-                window.live2dManager.pixi_app = null;
-                window.live2dManager.isInitialized = false;
-
-                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
                 showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
             }
         } else { // VRM
@@ -2205,10 +2199,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                // 传入 { autoPlay: false } 让模型保持 T-Pose 静止
+                // 传入 { autoPlay: false } 以便在此处统一播放待机动画，避免先露出 T-pose
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
                 await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
+                // 加载后立即播默认待机动画，避免 T-pose 显得生硬
+                const defaultIdleUrl = '/static/vrm/animation/wait03.vrma';
+                const idleSel = document.getElementById('idle-animation-select');
+                const idleUrl = (idleSel && idleSel.value) ? idleSel.value : defaultIdleUrl;
+                if (idleUrl && vrmManager.animation) {
+                    try {
+                        await vrmManager.playVRMAAnimation(idleUrl, { loop: true, immediate: true, isIdle: true });
+                    } catch (e) {
+                        console.warn('[VRM] 播放默认待机动画失败，使用内置默认:', e);
+                        if (idleUrl !== defaultIdleUrl) {
+                            try {
+                                await vrmManager.playVRMAAnimation(defaultIdleUrl, { loop: true, immediate: true, isIdle: true });
+                            } catch (e2) {
+                                console.warn('[VRM] 播放 wait03 待机动画失败:', e2);
+                            }
+                        }
+                    }
+                }
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();
