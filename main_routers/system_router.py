@@ -32,6 +32,7 @@ from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
+    get_proactive_format_sections,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -1536,10 +1537,11 @@ async def proactive_chat(request: Request):
         # 流程：tokens → TTS 即时生成 → 全文完成后一次性投递文本 → abort 时中断两端
         # ================================================================
         
-        # 获取角色完整人设
+        # 获取角色完整人设，替换模板变量
         character_prompt = lanlan_prompt_map.get(lanlan_name, '')
         if not character_prompt:
             logger.warning(f"[{lanlan_name}] 未找到角色人设，使用空字符串")
+        character_prompt = character_prompt.replace('{LANLAN_NAME}', lanlan_name).replace('{MASTER_NAME}', master_name_current)
         
         # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
         screenshot_b64_for_phase2 = ''
@@ -1603,6 +1605,11 @@ async def proactive_chat(request: Request):
             ef = _ext_footers.get(proactive_lang, _ext_footers['zh'])
             external_section = f"{el}\n{web_topic}\n{ef}"
         
+        source_instruction, output_format_section = get_proactive_format_sections(
+            has_screen=bool(screen_section),
+            has_web=bool(external_section),
+            lang=proactive_lang,
+        )
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
@@ -1610,7 +1617,9 @@ async def proactive_chat(request: Request):
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
-            master_name=master_name_current
+            master_name=master_name_current,
+            source_instruction=source_instruction,
+            output_format_section=output_format_section,
         )
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
