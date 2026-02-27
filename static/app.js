@@ -8816,6 +8816,9 @@ function init_app() {
         const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
             ? window.targetFrameRate
             : targetFrameRate;
+        const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
+            ? window.mouseTrackingEnabled
+            : true;
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -8829,7 +8832,8 @@ function init_app() {
             proactiveVisionInterval: currentProactiveVisionInterval,
             proactivePersonalChatEnabled: currentPersonalChat,
             renderQuality: currentRenderQuality,
-            targetFrameRate: currentTargetFrameRate
+            targetFrameRate: currentTargetFrameRate,
+            mouseTrackingEnabled: currentMouseTracking
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
 
@@ -8938,6 +8942,14 @@ function init_app() {
                 // 帧率设置
                 targetFrameRate = settings.targetFrameRate ?? 60;
                 window.targetFrameRate = targetFrameRate;
+                // 鼠标跟踪设置（严格转换为布尔值）
+                if (typeof settings.mouseTrackingEnabled === 'boolean') {
+                    window.mouseTrackingEnabled = settings.mouseTrackingEnabled;
+                } else if (typeof settings.mouseTrackingEnabled === 'string') {
+                    window.mouseTrackingEnabled = settings.mouseTrackingEnabled === 'true';
+                } else {
+                    window.mouseTrackingEnabled = true;
+                }
 
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
@@ -8973,6 +8985,7 @@ function init_app() {
                 window.renderQuality = renderQuality;
                 window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
                 window.targetFrameRate = targetFrameRate;
+                window.mouseTrackingEnabled = true;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -8993,6 +9006,7 @@ function init_app() {
             window.renderQuality = renderQuality;
             window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
             window.targetFrameRate = targetFrameRate;
+            window.mouseTrackingEnabled = true;
         }
     }
 

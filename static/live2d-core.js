@@ -85,6 +85,7 @@ class Live2DManager {
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
+        this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
         
         // 模型加载锁，防止并发加载导致重复模型叠加
         this._isLoadingModel = false;
@@ -599,6 +600,60 @@ class Live2DManager {
         Object.keys(this._floatingButtons).forEach(btnId => {
             this.setButtonActive(btnId, false);
         });
+    }
+
+    /**
+     * 【统一状态管理】根据全局状态同步浮动按钮状态
+     * 用于模型重新加载后恢复按钮状态（如画质变更后）
+     */
+    _syncButtonStatesWithGlobalState() {
+        if (!this._floatingButtons) return;
+
+        // 同步语音按钮状态
+        const isRecording = window.isRecording || false;
+        if (this._floatingButtons.mic) {
+            this.setButtonActive('mic', isRecording);
+        }
+
+        // 同步屏幕分享按钮状态
+        // 屏幕分享状态通过 DOM 元素判断（screenButton 的 active class 或 stopButton 的 disabled 状态）
+        let isScreenSharing = false;
+        const screenButton = document.getElementById('screenButton');
+        const stopButton = document.getElementById('stopButton');
+        if (screenButton && screenButton.classList.contains('active')) {
+            isScreenSharing = true;
+        } else if (stopButton && !stopButton.disabled) {
+            isScreenSharing = true;
+        }
+        if (this._floatingButtons.screen) {
+            this.setButtonActive('screen', isScreenSharing);
+        }
+    }
+
+    /**
+     * 设置鼠标跟踪是否启用
+     * @param {boolean} enabled - 是否启用鼠标跟踪
+     */
+    setMouseTrackingEnabled(enabled) {
+        this._mouseTrackingEnabled = enabled;
+        window.mouseTrackingEnabled = enabled;
+
+        if (enabled) {
+            // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
+            if (this.currentModel && !this._mouseTrackingListener) {
+                this.enableMouseTracking(this.currentModel);
+            }
+        } else {
+            this.isFocusing = false;
+        }
+    }
+
+    /**
+     * 获取鼠标跟踪是否启用
+     * @returns {boolean}
+     */
+    isMouseTrackingEnabled() {
+        return this._mouseTrackingEnabled !== false;
     }
 }
 
