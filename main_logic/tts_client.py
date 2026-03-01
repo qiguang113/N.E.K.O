@@ -321,44 +321,38 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     break
 
                 if sid == "__interrupt__":
-                    sid = None
+                    # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    session_id = None
+                    session_ready.clear()
+                    current_speech_id = None
+                    continue
                 
                 if sid is None:
-                    # 提交缓冲区完成当前合成
+                    # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
+                    # 音频继续通过 receive_task 流入 response_queue，
+                    # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_id and current_speech_id is not None:
                         try:
-                            response_done.clear()  # 清除完成标志，准备等待新的完成事件
                             done_event = {
                                 "type": "tts.text.done",
                                 "data": {"session_id": session_id}
                             }
                             await ws.send(json.dumps(done_event))
-                            # 等待服务器返回响应完成事件，然后关闭连接
-                            try:
-                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
-                                logger.debug("音频生成完成，主动关闭连接")
-                            except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
-                            
-                            # 主动关闭连接，避免连接一直保持到超时
-                            if ws:
-                                try:
-                                    await ws.close()
-                                except:  # noqa: E722
-                                    pass
-                                ws = None
-                            if receive_task and not receive_task.done():
-                                receive_task.cancel()
-                                try:
-                                    await receive_task
-                                except asyncio.CancelledError:
-                                    pass
-                                receive_task = None
-                            session_id = None
-                            session_ready.clear()
-                            current_speech_id = None  # 清空ID以便下次重连
                         except Exception as e:
-                            logger.error(f"完成生成失败: {e}")
+                            logger.warning(f"发送TTS完成信号失败: {e}")
                     continue
                 
                 # 新的语音ID，重新建立连接
@@ -637,42 +631,36 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     break
 
                 if sid == "__interrupt__":
-                    sid = None
+                    # 打断：立即关闭连接，不发 commit、不等服务器确认
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    session_ready.clear()
+                    current_speech_id = None
+                    continue
                 
                 if sid is None:
-                    # 提交缓冲区完成当前合成（仅当之前有文本时）
+                    # 正常结束（非阻塞）：提交缓冲区，但不等待服务器确认、不关闭连接
+                    # 音频继续通过 receive_task 流入 response_queue，
+                    # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_ready.is_set() and current_speech_id is not None:
                         try:
-                            response_done.clear()  # 清除完成标志，准备等待新的完成事件
                             await ws.send(json.dumps({
                                 "type": "input_text_buffer.commit",
-                                "event_id": f"event_{int(time.time() * 1000)}_interrupt_commit"
+                                "event_id": f"event_{int(time.time() * 1000)}_commit"
                             }))
-                            # 等待服务器返回响应完成事件，然后关闭连接
-                            try:
-                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
-                                logger.debug("音频生成完成，主动关闭连接")
-                            except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
-                            
-                            # 主动关闭连接，避免连接一直保持到超时
-                            if ws:
-                                try:
-                                    await ws.close()
-                                except:  # noqa: E722
-                                    pass
-                                ws = None
-                            if receive_task and not receive_task.done():
-                                receive_task.cancel()
-                                try:
-                                    await receive_task
-                                except asyncio.CancelledError:
-                                    pass
-                                receive_task = None
-                            session_ready.clear()
-                            current_speech_id = None  # 清空ID以便下次重连
                         except Exception as e:
-                            logger.error(f"提交缓冲区失败: {e}")
+                            logger.warning(f"提交缓冲区失败: {e}")
                     continue
                 
                 # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
@@ -1719,7 +1707,13 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     break
 
                 if sid == "__interrupt__":
-                    sid = None
+                    # 打断：立即关闭连接，不发 end、不等推理完成
+                    if _ws_is_open(ws):
+                        await close_session(ws, receive_task, send_end=False)
+                        ws = None
+                        receive_task = None
+                    current_speech_id = None
+                    continue
 
                 # speech_id 变化 → 打断旧会话，创建新连接
                 # 打断时不发 end（避免等待推理完成），直接关闭连接
@@ -1743,7 +1737,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         continue
 
                 if sid is None:
-                    # 终止信号：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
+                    # 正常结束：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
                     if _ws_is_open(ws):
                         await close_session(ws, receive_task, send_end=True)
                         ws = None
@@ -1998,11 +1992,25 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 break
 
             if sid == "__interrupt__":
-                sid = None
+                # 打断：立即关闭连接，不发 end 信号
+                if receive_task and not receive_task.done():
+                    receive_task.cancel()
+                    try:
+                        await receive_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    receive_task = None
+                if ws:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                current_speech_id = None
+                continue
 
             # speech_id 变化 -> 打断旧语音，建立新连接
             if sid != current_speech_id and sid is not None:
-                # 发送结束信号（文本已在实时流中发送过了）
                 if ws:
                     await send_end_signal(ws)
                 
@@ -2015,7 +2023,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     continue
 
             if sid is None:
-                # 终止信号：发送结束信号
+                # 正常结束：发送结束信号
                 if ws:
                     await send_end_signal(ws)
                 current_speech_id = None

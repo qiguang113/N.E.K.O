@@ -2399,21 +2399,24 @@ class LLMSessionManager:
     
     async def send_status(self, message: str): # 向前端发送status message
         """
-        发送状态消息（已纳入翻译通道）
-        
-        注意：status 消息会被翻译后发送到 WebSocket 和同步队列（sync_message_queue）
-        如果下游监控服务依赖中文关键字，建议改为基于 type/code 等机器字段进行判断
+        发送状态消息。
+
+        TODO: status 翻译已禁用。原因：翻译走与主对话相同的 LLM API，当 API 返回 400（如 "you are not using Lanlan"）
+        时，handle_connection_error 会 send_status(error_msg)，触发翻译请求，导致二次 400 与重复报错。
+        若需恢复：取消下方注释，将 message_to_send 改为 translated_message。
+        若下游监控依赖中文关键字，建议改为基于 type/code 等机器字段判断。
         """
         try:
-            # 根据用户语言翻译消息
-            translated_message = await self.translate_if_needed(message)
-            
+            # 根据用户语言翻译消息（已禁用，避免 API 关会话时翻译请求二次触发 400）
+            # translated_message = await self.translate_if_needed(message)
+            message_to_send = message  # 原样发送，不翻译
+
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "status", "message": translated_message})
+                data = json.dumps({"type": "status", "message": message_to_send})
                 await self.websocket.send_text(data)
 
-                # 同步到同步服务器（使用翻译后的消息）
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": translated_message}})
+                # 同步到同步服务器
+                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message_to_send}})
         except WebSocketDisconnect:
             pass
         except Exception as e:
