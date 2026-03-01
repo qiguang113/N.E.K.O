@@ -741,9 +741,8 @@ class LLMSessionManager:
         return text
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
-        # 前端未传语言时，此时 Steam 已初始化，安全读取全局语言
-        if self.user_language is None:
-            self.user_language = normalize_language_code(get_global_language(), format='full')
+        # 每次 start_session 都重新获取全局语言，确保 Steam/系统语言变更能即时生效
+        self.user_language = normalize_language_code(get_global_language(), format='short')
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0

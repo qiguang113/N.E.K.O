@@ -254,7 +254,6 @@ async def get_steam_language():
         # 使用 language_utils 的归一化函数，统一映射逻辑
         # format='full' 返回 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' 格式（用于前端 i18n）
         i18n_language = normalize_language_code(steam_language, format='full')
-        logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
         # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
         ip_country = None
@@ -264,28 +263,18 @@ async def get_steam_language():
             # 使用 Steam Utils API 获取用户 IP 所在国家
             raw_ip_country = steamworks.Utils.GetIPCountry()
             
-            # 醒目调试日志
-            print("=" * 60)
-            print(f"[GeoIP API DEBUG] Raw GetIPCountry() returned: {repr(raw_ip_country)}")
-            
             if isinstance(raw_ip_country, bytes):
                 ip_country = raw_ip_country.decode('utf-8')
-                print(f"[GeoIP API DEBUG] Decoded from bytes: '{ip_country}'")
             else:
                 ip_country = raw_ip_country
             
-            # 转为大写以便比较
             if ip_country:
                 ip_country = ip_country.upper()
-                # 判断是否为中国大陆（国家代码为 "CN"）
                 is_mainland_china = (ip_country == "CN")
-                print(f"[GeoIP API DEBUG] Country (upper): '{ip_country}'")
-                print(f"[GeoIP API DEBUG] Is mainland China: {is_mainland_china}")
-            else:
-                print(f"[GeoIP API DEBUG] Country is empty/None")
-            print("=" * 60)
             
-            logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+            if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
+                get_steam_language._logged = True
+                logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
             # Write back to ConfigManager so URL adjustment uses the same result
             try:
                 from utils.config_manager import ConfigManager
@@ -293,7 +282,7 @@ async def get_steam_language():
             except Exception:
                 pass
         except Exception as geo_error:
-            print(f"[GeoIP API DEBUG] Exception: {geo_error}")
+            get_steam_language._logged = False
             logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
             ip_country = None
             is_mainland_china = False

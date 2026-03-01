@@ -999,8 +999,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
                 // 同时检查鼠标跟踪是否启用
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
-                if (this.isFocusing && isMouseTrackingEnabled) {
-                    model.focus(pointer.x, pointer.y);
+                if (this.isFocusing) {
+                    if (isMouseTrackingEnabled) {
+                        model.focus(pointer.x, pointer.y);
+                    } else {
+                        model.focus(centerX, centerY);
+                    }
                 }
             } else {
                 // 鼠标离开模型区域，启动隐藏定时器
