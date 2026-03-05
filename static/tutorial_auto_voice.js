@@ -322,6 +322,7 @@ class TutorialAutoVoice {
             this._playFromArrayBuffer(arrayBuffer, speakId);
         } catch (e) {
             console.warn('[TutorialVoice] Edge TTS 请求失败:', e.message);
+            if (this._speakId !== speakId) return;
             this.isSpeaking = false;
             this._playNext();
         }
@@ -434,6 +435,7 @@ class TutorialAutoVoice {
     // ==================== 文本清理 ====================
 
     _cleanText(text) {
+        if (text == null) return '';
         if (typeof text !== 'string') text = String(text);
         let cleaned = text;
 
