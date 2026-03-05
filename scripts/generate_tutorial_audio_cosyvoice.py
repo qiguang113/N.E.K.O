@@ -2,8 +2,9 @@
 """
 CosyVoice 新手引导音频批量生成脚本
 用法：
-    python scripts/generate_tutorial_audio_cosyvoice.py
-    python scripts/generate_tutorial_audio_cosyvoice.py --force
+    python scripts/generate_tutorial_audio_cosyvoice.py --cosyvoice-dir /path/to/CosyVoice-main
+    python scripts/generate_tutorial_audio_cosyvoice.py --cosyvoice-dir /path/to/CosyVoice-main --force
+    环境变量 COSYVOICE_DIR 也可代替 --cosyvoice-dir
 输出目录：static/tutorial_audio/<lang>/
 """
 
@@ -17,7 +18,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-COSYVOICE_DIR   = 'D:/Temp/cosyvoice/CosyVoice-main'
+# 路径由 CLI 参数或环境变量传入，不在此硬编码
 COSYVOICE_MODEL = 'pretrained_models/iic/CosyVoice-300M-Instruct'
 SPEAKER = '中文女'
 SPEED   = 1.0
@@ -137,7 +138,7 @@ def preprocess_text(text):
     return text
 
 
-def generate(lang, out_dir, force=False):
+def generate(lang, out_dir, cosyvoice_dir, force=False):
     import warnings
     warnings.filterwarnings('ignore')
 
@@ -148,7 +149,7 @@ def generate(lang, out_dir, force=False):
 
     os.makedirs(out_dir, exist_ok=True)
 
-    cosyvoice_abs = os.path.abspath(COSYVOICE_DIR)
+    cosyvoice_abs = os.path.abspath(cosyvoice_dir)
     os.chdir(cosyvoice_abs)
     if cosyvoice_abs not in sys.path:
         sys.path.insert(0, os.path.join(cosyvoice_abs, 'third_party', 'Matcha-TTS'))
@@ -192,9 +193,15 @@ def generate(lang, out_dir, force=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--cosyvoice-dir", default=os.environ.get("COSYVOICE_DIR"),
+                        help="CosyVoice-main 根目录路径（也可通过环境变量 COSYVOICE_DIR 传入）")
     parser.add_argument("--lang",  default="zh-CN")
     parser.add_argument("--out",   default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+
+    if not args.cosyvoice_dir:
+        parser.error("请通过 --cosyvoice-dir 或环境变量 COSYVOICE_DIR 指定 CosyVoice 目录")
+
     out_dir = args.out or os.path.join("static", "tutorial_audio", args.lang)
-    generate(args.lang, out_dir, force=args.force)
+    generate(args.lang, out_dir, cosyvoice_dir=args.cosyvoice_dir, force=args.force)
