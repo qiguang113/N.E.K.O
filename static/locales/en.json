@@ -1349,6 +1349,10 @@
             "proactiveNewsChatTooltip": "Use trending topics for proactive chat",
             "proactiveVideoChat": "Video Website",
             "proactiveVideoChatTooltip": "Use video content for proactive chat",
+            "proactivePersonalChat": "Personal Updates",
+            "proactivePersonalChatTooltip": "Use personal updates from connected platforms for proactive chat",
+            "proactiveMusicChat": "Music Recommendation",
+            "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "agentMaster": "Agent Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
@@ -2265,6 +2269,22 @@
             "active": "● Ready",
             "inactive": "○ Not configured"
         }
+    },
+    "music": {
+        "unknownTrack": "Unknown Track",
+        "unknownArtist": "Unknown Artist",
+        "play": "Play",
+        "pause": "Pause",
+        "playing": "Playing",
+        "paused": "Paused",
+        "searching": "Searching: {{query}}",
+        "notFound": "Track not found: {{query}}",
+        "nowPlaying": "Now Playing: {{name}}",
+        "showPlaylist": "Show Playlist",
+        "hidePlaylist": "Hide Playlist",
+        "searchFailed": "Music search failed",
+        "playError": "Playback error",
+        "ended": "Ended"
     },
     "notice": {
         "voiceMigration": {
