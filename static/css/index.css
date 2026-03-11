@@ -779,14 +779,10 @@ button * {
 #subtitle-display.show {
     opacity: 1;
     visibility: visible;
-    transform: translateX(-50%) translateY(0);
     animation: subtitleFadeIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
-/* 确保拖拽句柄在任何情况下都显示 */
-#subtitle-display #subtitle-drag-handle {
-    display: flex !important;
-}
+/* 确保拖拽句柄在任何情况下都显示（防御性规则） */
 
 @keyframes subtitleFadeIn {
     0% {
@@ -808,7 +804,7 @@ button * {
         min-width: 280px;
         max-width: 90%;
         font-size: 17px;
-        padding: 16px 20px;
+        padding: 16px 52px 16px 20px;
     }
 }
 

@@ -240,7 +240,7 @@ async function translateAndShowSubtitle(text) {
             console.warn('字幕显示元素不存在');
             return;
         }
-        
+
         // 调用翻译API
         const response = await fetch('/api/translate', {
             method: 'POST',
@@ -255,7 +255,7 @@ async function translateAndShowSubtitle(text) {
             }),
             signal: currentTranslateAbortController.signal
         });
-        
+
         if (!response.ok) {
             console.warn('翻译请求失败:', response.status);
             if (pendingTranslation === currentTranslationText) {
@@ -269,28 +269,30 @@ async function translateAndShowSubtitle(text) {
             });
             return;
         }
-        
+
         const result = await response.json();
-        
+
         if (pendingTranslation !== currentTranslationText) {
             console.log('检测到更新的翻译请求，忽略旧的翻译结果');
             return;
         }
         pendingTranslation = null;
-        
+
         if (result.google_failed === true) {
             googleTranslateFailed = true;
             console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
         }
-        
+
         const frontendDetectedLang = detectLanguage(text);
         const isNonUserLanguage = frontendDetectedLang !== 'unknown' && frontendDetectedLang !== userLanguage;
-        
-        const subtitleDisplayAfter = document.getElementById('subtitle-display');
-        if (!subtitleDisplayAfter) {
-            console.warn('字幕显示元素在异步操作后不存在，可能已被移除');
+
+        // 异步等待后再次确认元素仍然存在
+        if (!subtitleDisplay.isConnected) {
+            console.warn('字幕显示元素在异步操作后已从DOM移除');
             return;
         }
+
+        const subtitleDisplayAfter = subtitleDisplay;
         
         if (result.success && result.translated_text && 
             result.source_lang && result.target_lang && 
@@ -728,8 +730,7 @@ function initSubtitleDrag() {
 
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
-        document.removeEventListener('touchmove', handleTouchMove);
-        document.removeEventListener('touchend', handleTouchUp);
+        // 注意：touchmove/touchend 是初始化时全局绑定的，不在这里移除
     }
 
     // 触摸结束事件
