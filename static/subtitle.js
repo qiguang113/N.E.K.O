@@ -754,6 +754,7 @@ function initSubtitleDrag() {
     // 全局绑定移动和结束事件
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchUp);
+    document.addEventListener('touchcancel', handleTouchUp);
 
     // 窗口大小改变时，确保字幕不超出边界
     window.addEventListener('resize', () => {
