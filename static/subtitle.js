@@ -299,17 +299,18 @@ async function translateAndShowSubtitle(text) {
             showSubtitlePrompt();
             
             if (subtitleEnabled) {
-                subtitleDisplayAfter.textContent = result.translated_text;
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = result.translated_text;
                 subtitleDisplayAfter.classList.add('show');
                 subtitleDisplayAfter.classList.remove('hidden');
                 subtitleDisplayAfter.style.opacity = '1';
                 console.log('字幕已更新（已翻译）:', result.translated_text.substring(0, 50) + '...');
-                
+
                 if (subtitleTimeout) {
                     clearTimeout(subtitleTimeout);
                     subtitleTimeout = null;
                 }
-                
+
                 subtitleTimeout = setTimeout(() => {
                     const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
                     if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.classList.contains('show')) {
@@ -318,7 +319,8 @@ async function translateAndShowSubtitle(text) {
                     }
                 }, 30000);
             } else {
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
@@ -327,14 +329,16 @@ async function translateAndShowSubtitle(text) {
         } else {
             if (isNonUserLanguage) {
                 showSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
                 console.log('前端检测到非用户语言，显示提示框');
             } else {
                 hideSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
@@ -534,7 +538,8 @@ function showSubtitlePrompt() {
         if (!subtitleEnabled) {
             const subtitleDisplay = document.getElementById('subtitle-display');
             if (subtitleDisplay) {
-                subtitleDisplay.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplay.classList.remove('show');
                 subtitleDisplay.classList.add('hidden');
                 subtitleDisplay.style.opacity = '0';
@@ -615,4 +620,144 @@ document.addEventListener('DOMContentLoaded', async function() {
             console.error('[App] 通用引导管理器初始化失败:', error);
         }
     }
+
+    // 初始化字幕拖拽功能
+    initSubtitleDrag();
 });
+
+// 字幕拖拽功能
+function initSubtitleDrag() {
+    const subtitleDisplay = document.getElementById('subtitle-display');
+    const dragHandle = document.getElementById('subtitle-drag-handle');
+
+    console.log('[Subtitle] 调试 - 找到字幕元素:', !!subtitleDisplay);
+    console.log('[Subtitle] 调试 - 找到拖拽句柄:', !!dragHandle);
+
+    if (!subtitleDisplay || !dragHandle) {
+        console.warn('[Subtitle] 无法找到字幕元素或拖拽句柄');
+        return;
+    }
+
+    let isDragging = false;
+    let startX, startY;
+    let initialX, initialY;
+
+    // 鼠标按下事件
+    function handleMouseDown(e) {
+        // 只响应左键拖拽
+        if (e.button !== 0) return;
+
+        isDragging = true;
+        subtitleDisplay.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+
+        // 获取当前元素的实际位置（包含 transform）
+        const rect = subtitleDisplay.getBoundingClientRect();
+
+        // 记录鼠标按下时的位置
+        startX = e.clientX;
+        startY = e.clientY;
+
+        // 记录元素当前的左上角位置
+        initialX = rect.left;
+        initialY = rect.top;
+
+        // 清除 transform 居中效果，改为绝对定位，保持当前位置
+        subtitleDisplay.style.transform = 'none';
+        subtitleDisplay.style.left = rect.left + 'px';
+        subtitleDisplay.style.top = rect.top + 'px';
+        subtitleDisplay.style.bottom = 'auto';
+        // 阻止 .show 类的 animation 效果覆盖拖拽后的位置
+        // CSS animation 优先级高于内联 transform，但 animation 属性本身遵循普通 cascade（内联 > class）
+        subtitleDisplay.style.animation = 'none';
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    // 触摸开始事件
+    function handleTouchStart(e) {
+        const touch = e.touches[0];
+        handleMouseDown({
+            button: 0,
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+    }
+
+    // 鼠标移动事件
+    function handleMouseMove(e) {
+        if (!isDragging) return;
+
+        e.preventDefault();
+
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        let newX = initialX + dx;
+        let newY = initialY + dy;
+
+        // 限制在窗口范围内
+        const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
+        const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
+
+        newX = Math.max(0, Math.min(newX, maxX));
+        newY = Math.max(0, Math.min(newY, maxY));
+
+        subtitleDisplay.style.left = newX + 'px';
+        subtitleDisplay.style.top = newY + 'px';
+    }
+
+    // 触摸移动事件
+    function handleTouchMove(e) {
+        const touch = e.touches[0];
+        handleMouseMove({
+            preventDefault: () => e.preventDefault(),
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+    }
+
+    // 鼠标释放事件
+    function handleMouseUp() {
+        if (!isDragging) return;
+
+        isDragging = false;
+        document.body.style.userSelect = '';
+        subtitleDisplay.classList.remove('dragging');
+
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.removeEventListener('touchmove', handleTouchMove);
+        document.removeEventListener('touchend', handleTouchUp);
+    }
+
+    // 触摸结束事件
+    function handleTouchUp() {
+        handleMouseUp();
+    }
+
+    // 绑定事件到拖拽句柄
+    dragHandle.addEventListener('mousedown', handleMouseDown);
+    dragHandle.addEventListener('touchstart', handleTouchStart, { passive: false });
+
+    // 全局绑定移动和结束事件
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchUp);
+
+    // 窗口大小改变时，确保字幕不超出边界
+    window.addEventListener('resize', () => {
+        const rect = subtitleDisplay.getBoundingClientRect();
+        const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
+        const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
+
+        if (rect.right > window.innerWidth) {
+            subtitleDisplay.style.left = maxX + 'px';
+        }
+        if (rect.bottom > window.innerHeight) {
+            subtitleDisplay.style.top = maxY + 'px';
+        }
+    });
+
+    console.log('[Subtitle] 字幕拖拽功能已初始化');
+}
