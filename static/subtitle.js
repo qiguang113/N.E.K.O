@@ -641,6 +641,7 @@ function initSubtitleDrag() {
     }
 
     let isDragging = false;
+    let pendingDrag = false; // mousedown 后等待真实拖动
     let startX, startY;
     let initialX, initialY;
 
@@ -649,29 +650,15 @@ function initSubtitleDrag() {
         // 只响应左键拖拽
         if (e.button !== 0) return;
 
-        isDragging = true;
-        subtitleDisplay.classList.add('dragging');
+        pendingDrag = true;
         document.body.style.userSelect = 'none';
 
-        // 获取当前元素的实际位置（包含 transform）
+        // 获取并记录当前元素位置（含 transform），在 mousedown 时快照
         const rect = subtitleDisplay.getBoundingClientRect();
-
-        // 记录鼠标按下时的位置
         startX = e.clientX;
         startY = e.clientY;
-
-        // 记录元素当前的左上角位置
         initialX = rect.left;
         initialY = rect.top;
-
-        // 清除 transform 居中效果，改为绝对定位，保持当前位置
-        subtitleDisplay.style.transform = 'none';
-        subtitleDisplay.style.left = rect.left + 'px';
-        subtitleDisplay.style.top = rect.top + 'px';
-        subtitleDisplay.style.bottom = 'auto';
-        // 阻止 .show 类的 animation 效果覆盖拖拽后的位置
-        // CSS animation 优先级高于内联 transform，但 animation 属性本身遵循普通 cascade（内联 > class）
-        subtitleDisplay.style.animation = 'none';
 
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
@@ -687,14 +674,35 @@ function initSubtitleDrag() {
         });
     }
 
+    // 提交手动定位（首次真实拖动时调用一次）
+    function commitDragPosition() {
+        isDragging = true;
+        pendingDrag = false;
+        subtitleDisplay.classList.add('dragging');
+        // 清除 transform 居中效果，改为绝对定位，保持当前位置
+        subtitleDisplay.style.transform = 'none';
+        subtitleDisplay.style.left = initialX + 'px';
+        subtitleDisplay.style.top = initialY + 'px';
+        subtitleDisplay.style.bottom = 'auto';
+        // 阻止 .show 类的 animation 效果覆盖拖拽后的位置
+        // CSS animation 优先级高于内联 transform，但 animation 属性本身遵循普通 cascade（内联 > class）
+        subtitleDisplay.style.animation = 'none';
+    }
+
     // 鼠标移动事件
     function handleMouseMove(e) {
-        if (!isDragging) return;
+        if (!pendingDrag && !isDragging) return;
 
         e.preventDefault();
 
         const dx = e.clientX - startX;
         const dy = e.clientY - startY;
+
+        // 超过 4px 阈值后才正式进入拖动模式，避免单纯点击破坏居中布局
+        if (!isDragging) {
+            if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+            commitDragPosition();
+        }
 
         let newX = initialX + dx;
         let newY = initialY + dy;
@@ -722,8 +730,9 @@ function initSubtitleDrag() {
 
     // 鼠标释放事件
     function handleMouseUp() {
-        if (!isDragging) return;
+        if (!pendingDrag && !isDragging) return;
 
+        pendingDrag = false;
         isDragging = false;
         document.body.style.userSelect = '';
         subtitleDisplay.classList.remove('dragging');

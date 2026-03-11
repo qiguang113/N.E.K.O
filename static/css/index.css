@@ -710,8 +710,8 @@ button * {
     opacity: 0;
     visibility: hidden;
     transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-    /* 默认允许交互，拖拽句柄通过 pointer-events: auto 单独控制 */
-    pointer-events: auto;
+    /* 文字区域点击穿透，只有拖拽句柄通过 pointer-events: auto 响应交互 */
+    pointer-events: none;
     /* 简化为2层shadow以提升性能 */
     box-shadow: 0 8px 32px rgba(68, 183, 254, 0.4),
         0 0 0 1px rgba(255, 255, 255, 0.3) inset;
