@@ -1,0 +1,95 @@
+[plugin]
+id = "galgame_companion"
+name = "Galgame陪玩助手"
+description = "使用内存读取模式读取galgame文字，让猫娘陪玩并给出回复。支持记忆混合/隔离两种模式。"
+short_description = "Memory-read galgame text and let the catgirl companion react to the story in real time."
+keywords = [
+    "galgame",
+    "视觉小说",
+    "visual novel",
+    "陪玩",
+    "companion",
+    "内存读取",
+    "memory reader",
+    "猫娘",
+    "catgirl",
+    "剧情",
+    "台词",
+    "对话框",
+]
+version = "1.0.0"
+type = "plugin"
+entry = "plugin.plugins.galgame_companion:GalgameCompanionPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = true
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "Galgame陪玩助手"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call", "config:read"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+# ── 内存读取配置 ──
+[memory_reader]
+# Textractor CLI 路径，留空则自动检测
+textractor_path = ""
+# 轮询间隔（秒）
+poll_interval_seconds = 1.0
+# 去重窗口大小（用于防止重复台词触发多次回复）
+dedupe_window_size = 32
+# 静默超时（秒）：超过此时间无新文本则认为游戏暂停
+idle_timeout_seconds = 120
+# 是否自动检测游戏进程并注入 hook
+auto_detect = true
+# 自定义 hook codes（按引擎分组）
+[memory_reader.engine_hooks]
+unity = []
+kirikiri = []
+renpy = []
+
+# ── 陪玩行为配置 ──
+[companion]
+# 是否与当前猫娘记忆混合
+memory_mix_enabled = false
+# 最大上下文行数
+max_context_lines = 20
+# 回复冷却时间（秒）
+reply_cooldown_seconds = 8.0
+# 最小台词间隔行数
+min_lines_before_reply = 4
+# 场景切换时主动打招呼
+greet_on_scene_change = true
+# 场景切换冷却时间（秒）
+scene_change_cooldown_seconds = 15.0
+# 推送优先级（1-10）
+push_priority = 6
+# 在猫娘回复中附带台词引用
+include_line_quote = true
+# 猫娘回复最大长度（字符数）
+max_reply_chars = 300
+
+# ── LLM 调用配置 ──
+[llm]
+call_timeout_seconds = 20
+max_in_flight = 1
+request_cache_ttl_seconds = 3
