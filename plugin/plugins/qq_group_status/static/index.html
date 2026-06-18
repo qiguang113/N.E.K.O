@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QQ 群状态监控</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>QQ 群状态监控</h1>
+        <div class="status-line" id="status-line">加载中</div>
+      </div>
+      <div class="top-actions">
+        <button type="button" id="refresh-btn">刷新</button>
+        <button type="button" id="start-btn" class="primary">启动监听</button>
+        <button type="button" id="stop-btn">停止监听</button>
+      </div>
+    </header>
+
+    <section class="panel guide-panel">
+      <div class="section-head">
+        <div>
+          <h2>快速开始</h2>
+          <p class="guide-summary">先准备 NapCat / OneBot，再配置监控群、授权 QQ 和相关负责人。</p>
+        </div>
+        <div class="guide-actions">
+          <a class="link-button primary" href="https://github.com/NapNeko/NapCatQQ/releases" target="_blank" rel="noopener noreferrer">下载 NapCat</a>
+          <span class="guide-note">完整教程在插件详情的“快速开始”里</span>
+        </div>
+      </div>
+      <div class="setup-checks" id="setup-checks">
+        <div class="check-card pending">等待检测</div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <form class="panel settings-panel" id="settings-form">
+        <div class="section-head">
+          <h2>连接</h2>
+          <button type="submit" class="primary">保存配置</button>
+        </div>
+
+        <label>
+          <span>OneBot WebSocket</span>
+          <input id="onebot-url" type="text" autocomplete="off" placeholder="ws://127.0.0.1:3001">
+        </label>
+
+        <label>
+          <span>访问令牌</span>
+          <input id="token" type="password" autocomplete="off" placeholder="留空表示不使用 token">
+        </label>
+
+        <label class="check-row">
+          <input id="auto-start" type="checkbox">
+          <span>插件启动时自动监听</span>
+        </label>
+
+        <div class="section-head compact">
+          <h2>监控范围</h2>
+        </div>
+
+        <label>
+          <span>监控群号/名称</span>
+          <textarea id="monitored-groups" rows="4" placeholder="每行一个：1234567｜一群；留空表示监控所有群"></textarea>
+        </label>
+
+        <label>
+          <span>授权 QQ</span>
+          <textarea id="authorized-qqs" rows="4" data-forward-disabled="true" placeholder="有人 @ 这些 QQ 时，插件会用猫娘语气回复"></textarea>
+        </label>
+
+        <label>
+          <span>相关负责人</span>
+          <textarea id="responsible-people" rows="5" data-forward-disabled="true" placeholder="QQ|名称，每行一个；触发时随机 @ 一位"></textarea>
+        </label>
+
+        <div class="switch-grid">
+          <label class="check-row"><input id="question-enabled" type="checkbox"><span>疑问句提醒</span></label>
+          <label class="check-row"><input id="archive-enabled" type="checkbox" data-forward-disabled="true"><span>压缩包提醒</span></label>
+          <label class="check-row"><input id="mention-reply-enabled" type="checkbox" data-forward-disabled="true"><span>@ 授权 QQ 自动回复</span></label>
+          <label class="check-row"><input id="daily-chat-enabled" type="checkbox" data-forward-disabled="true"><span>日常聊天回 QQ</span></label>
+          <label class="check-row"><input id="daily-chat-requires-mention" type="checkbox" data-forward-disabled="true"><span>日常聊天需要 @ 授权 QQ</span></label>
+          <label class="check-row"><input id="issue-forwarding-enabled" type="checkbox"><span>问题转移模式</span></label>
+          <label class="check-row"><input id="mention-staff-enabled" type="checkbox" data-forward-disabled="true"><span>有问题时 @ 负责人</span></label>
+          <label class="check-row"><input id="popup-enabled" type="checkbox" data-forward-disabled="true"><span>弹窗提醒</span></label>
+          <label class="check-row"><input id="llm-reply-enabled" type="checkbox" data-forward-disabled="true"><span>优先使用模型生成回复</span></label>
+          <label class="check-row"><input id="sticker-enabled" type="checkbox" data-forward-disabled="true"><span>自动配表情包</span></label>
+        </div>
+
+        <div class="target-grid">
+          <label>
+            <span>问题转移目标类型</span>
+            <select id="issue-forward-target-type">
+              <option value="group">群聊</option>
+              <option value="user">好友/私聊</option>
+            </select>
+          </label>
+          <label>
+            <span>问题转移目标 QQ/群号</span>
+            <input id="issue-forward-group" type="text" autocomplete="off" placeholder="可填 123456 或 好友:123456">
+          </label>
+        </div>
+
+        <div class="keyword-grid">
+          <label>
+            <span>项目关键词</span>
+            <textarea id="project-keywords" rows="5" data-forward-disabled="true"></textarea>
+          </label>
+          <label>
+            <span>疑问关键词</span>
+            <textarea id="question-keywords" rows="5"></textarea>
+          </label>
+        </div>
+
+        <div class="number-grid">
+          <label>
+            <span>提醒冷却秒数</span>
+            <input id="notify-cooldown" type="number" min="0" step="1">
+          </label>
+          <label>
+            <span>回复冷却秒数</span>
+            <input id="reply-cooldown" type="number" min="0" step="1" data-forward-disabled="true">
+          </label>
+          <label>
+            <span>@ 负责人冷却秒数</span>
+            <input id="staff-cooldown" type="number" min="0" step="1" data-forward-disabled="true">
+          </label>
+          <label>
+            <span>表情包冷却秒数</span>
+            <input id="sticker-cooldown" type="number" min="0" step="1" data-forward-disabled="true">
+          </label>
+        </div>
+
+        <label>
+          <span>猫娘回复模板</span>
+          <textarea id="catgirl-template" rows="3" data-forward-disabled="true"></textarea>
+        </label>
+
+        <label>
+          <span>日常聊天回复模板</span>
+          <textarea id="daily-chat-template" rows="2" data-forward-disabled="true"></textarea>
+        </label>
+
+        <label>
+          <span>@ 负责人模板</span>
+          <textarea id="staff-template" rows="2" data-forward-disabled="true"></textarea>
+        </label>
+
+        <div class="section-head compact">
+          <h2>表情包库</h2>
+          <button type="button" id="import-stickers-btn" data-forward-disabled="true">导入选中文件</button>
+        </div>
+
+        <label>
+          <span>导入表情包</span>
+          <input id="sticker-files" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple data-forward-disabled="true">
+        </label>
+
+        <div id="sticker-library" class="sticker-library">
+          <div class="empty">暂无表情包</div>
+        </div>
+
+        <label>
+          <span>旧版表情包规则（可选）</span>
+          <textarea id="sticker-rules" rows="5" data-forward-disabled="true" placeholder="名称|图片URL或本地路径|关键词1,关键词2|question,archive_file|1"></textarea>
+        </label>
+      </form>
+
+      <aside class="panel runtime-panel">
+        <div class="section-head">
+          <h2>运行状态</h2>
+        </div>
+        <div class="metric-grid">
+          <div><span>监听</span><strong id="metric-running">-</strong></div>
+          <div><span>OneBot</span><strong id="metric-onebot">-</strong></div>
+          <div><span>监控群</span><strong id="metric-groups">0</strong></div>
+          <div><span>授权 QQ</span><strong id="metric-authorized">0</strong></div>
+        </div>
+
+        <div class="section-head compact">
+          <h2>规则测试</h2>
+          <button type="button" id="test-btn">测试</button>
+        </div>
+        <label>
+          <span>模拟消息</span>
+          <textarea id="test-text" rows="4" placeholder="@授权QQ 猫娘计划启动不了怎么办？"></textarea>
+        </label>
+        <label>
+          <span>模拟 @ 目标</span>
+          <input id="test-at" type="text" placeholder="多个 QQ 用逗号分隔">
+        </label>
+        <label>
+          <span>模拟文件名</span>
+          <input id="test-files" type="text" placeholder="debug.zip,logs.7z">
+        </label>
+        <pre id="test-output" class="output">等待测试</pre>
+
+        <div class="section-head compact">
+          <h2>最近事件</h2>
+        </div>
+        <div id="events-list" class="events-list">
+          <div class="empty">暂无事件</div>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./script.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+[plugin]
+name = "QQ 群状态监控"
+description = "监听 QQ 群疑问句、压缩包文件和 @ 授权 QQ，提醒开发者、拉人处理，或把问题转移到指定群聊/用户。"
+short_description = "监听 QQ 群问题，提醒处理或转移到指定群聊/用户。"
+keywords = ["qq", "onebot", "group", "monitor", "alert", "猫娘计划", "群状态", "提醒"]
+version = "0.1.0"
+id = "qq_group_status"
+type = "plugin"
+entry = "plugin.plugins.qq_group_status:QQGroupStatusPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "QQ 群状态监控"
+entry = "static/index.html"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "快速开始"
+entry = "doc/README.md"
+permissions = ["state:read"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = false

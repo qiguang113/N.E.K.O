@@ -1,0 +1,17 @@
+{
+  "plugin.name": "QQ 群状态监控",
+  "plugin.description": "监听 QQ 群疑问句、压缩包文件和 @ 授权 QQ，弹窗提醒开发者，并可在群内 @ 相关负责人或把问题转移到指定群聊/用户。",
+  "entries.get_status.name": "获取 QQ 群监控状态",
+  "entries.get_status.description": "读取 QQ 群状态监控插件的运行状态、配置和最近触发事件。",
+  "entries.save_config.name": "保存 QQ 群监控配置",
+  "entries.save_config.description": "保存 OneBot 地址、监控群、授权 QQ、疑问关键词、问题转移和相关负责人等配置。",
+  "entries.import_stickers.name": "导入 QQ 群表情包",
+  "entries.import_stickers.description": "导入 PNG、JPG、GIF 或 WebP 表情包，保存到表情包库供猫娘按名称选择。",
+  "entries.start_monitor.name": "启动 QQ 群状态监控",
+  "entries.start_monitor.description": "连接 OneBot WebSocket 并开始监听群聊消息。",
+  "entries.stop_monitor.name": "停止 QQ 群状态监控",
+  "entries.stop_monitor.description": "停止监听群聊消息并断开 OneBot WebSocket。",
+  "entries.test_evaluate_message.name": "测试群消息命中规则",
+  "entries.test_evaluate_message.description": "用一条模拟群消息测试当前配置会命中哪些 QQ 群状态监控规则。",
+  "guide.quickstart.title": "快速开始"
+}
