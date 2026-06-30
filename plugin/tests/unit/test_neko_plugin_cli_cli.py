@@ -7,7 +7,7 @@ import zipfile
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import create_cmd, init_cmd
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.paths import CliDefaults
 
@@ -360,6 +360,101 @@ def test_init_repo_rejects_uppercase_market_plugin_id(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert not (tmp_path / "n.e.k.o_plugin_MarketDemo").exists()
+
+
+def test_create_command_generates_assistant_plugin_and_package(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    target_dir = tmp_path / "target"
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "create",
+            "Summarize pasted notes and keep a searchable action panel",
+            "--plugin-id",
+            "quick_notes",
+            "--plugins-root",
+            str(plugins_root),
+            "--target-dir",
+            str(target_dir),
+            "--model",
+            "gpt-test",
+            "--provider",
+            "openai",
+            "--base-url",
+            "https://api.example.invalid/v1",
+            "--api-key-env",
+            "QUICK_NOTES_KEY",
+        ]
+    )
+
+    plugin_dir = plugins_root / "quick_notes"
+    package_path = target_dir / "quick_notes.neko-plugin"
+    assert exit_code == 0
+    assert (plugin_dir / "plugin.toml").is_file()
+    assert (plugin_dir / "__init__.py").is_file()
+    assert (plugin_dir / "static" / "index.html").is_file()
+    assert (plugin_dir / "docs" / "quickstart.md").is_file()
+    assert (plugin_dir / "config.json").is_file()
+    assert package_path.is_file()
+
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    assert "[plugin.ui]" in plugin_toml
+    assert 'entry = "static/index.html"' in plugin_toml
+    assert 'generation_model = "gpt-test"' in plugin_toml
+    init_py = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+    assert "@ui.context" in init_py
+    assert 'id="repair_prompt"' in init_py
+
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert "payload/plugins/quick_notes/static/index.html" in names
+    assert "payload/plugins/quick_notes/docs/quickstart.md" in names
+
+    captured = capsys.readouterr()
+    assert "[OK] built" in captured.out
+
+
+def test_doctor_start_writes_repair_prompt_from_startup_logs(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "N.E.K.O_Plugin_quick_notes_20260630.log").write_text(
+        "2026-06-30 10:00:00 - ERROR - startup failed\n"
+        "Traceback (most recent call last):\n"
+        "ModuleNotFoundError: No module named 'missing_dep'\n",
+        encoding="utf-8",
+    )
+    target_dir = tmp_path / "target"
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "doctor-start",
+            "quick_notes",
+            "--logs-dir",
+            str(logs_dir),
+            "--target-dir",
+            str(target_dir),
+            "--write-repair-prompt",
+            "--model",
+            "repair-model",
+        ]
+    )
+
+    prompt_path = target_dir / "quick_notes.repair-prompt.md"
+    assert exit_code == 2
+    assert prompt_path.is_file()
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "repair-model" in prompt
+    assert "ModuleNotFoundError" in prompt
+
+
+def test_derive_plugin_id_falls_back_for_non_ascii_brief() -> None:
+    plugin_id = create_cmd.derive_plugin_id("帮我生成一个待办提醒插件")
+
+    assert plugin_id.startswith("generated_")
+    assert create_cmd._PLUGIN_ID_RE.fullmatch(plugin_id)
 
 
 def test_setup_repo_git_skips_when_inside_existing_repo(

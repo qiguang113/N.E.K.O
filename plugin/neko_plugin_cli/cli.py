@@ -29,6 +29,7 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
     from plugin.neko_plugin_cli.commands import (  # noqa: E402
         analyze_cmd,
         check_cmd,
+        create_cmd,
         deps_cmd,
         init_cmd,
         inspect_cmd,
@@ -41,6 +42,7 @@ else:
     from .commands import (
         analyze_cmd,
         check_cmd,
+        create_cmd,
         deps_cmd,
         init_cmd,
         inspect_cmd,
@@ -73,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
             Recommended workflow:
               neko-plugin init-repo <plugin>       Create a standalone plugin repo
               neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
+              neko-plugin create "<brief>"         Create and package a plugin from one sentence
               neko-plugin add <plugin> <pkg>...    Add Python dependencies to vendor/
               neko-plugin sync <plugin>            Sync vendor/ from pyproject.toml
               neko-plugin check <plugin>           Diagnose local repo readiness
@@ -95,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     init_cmd.register(subparsers, defaults=defaults)
+    create_cmd.register(subparsers, defaults=defaults)
     check_cmd.register(subparsers, defaults=defaults)
     deps_cmd.register(subparsers, defaults=defaults)
     build_cmd.register(subparsers, defaults=defaults)
